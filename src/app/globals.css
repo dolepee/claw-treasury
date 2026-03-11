@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", "SFMono-Regular", monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --ct-bg: #0a0a0b;
+  --ct-surface: rgba(255, 255, 255, 0.06);
+  --ct-surface-strong: rgba(255, 255, 255, 0.1);
+  --ct-border: rgba(255, 255, 255, 0.1);
+  --ct-text: #f4f7f8;
+  --ct-text-soft: #9ca3af;
+  --ct-signal: #39e7c5;
+  --ct-signal-strong: #18c5ad;
+  --ct-warn: #f7b955;
+  --ct-danger: #fb7185;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background: var(--ct-bg);
+  }
+
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(57, 231, 197, 0.12), transparent 28%),
+      radial-gradient(circle at 82% 12%, rgba(24, 197, 173, 0.14), transparent 24%),
+      radial-gradient(circle at 50% 100%, rgba(34, 211, 238, 0.08), transparent 30%),
+      linear-gradient(180deg, #090a0b 0%, #0a0a0b 38%, #060707 100%);
+    color: var(--ct-text);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 92%);
+    opacity: 0.28;
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 18% 22%, rgba(57, 231, 197, 0.12), transparent 26%),
+      radial-gradient(circle at 72% 76%, rgba(56, 189, 248, 0.08), transparent 24%);
+    filter: blur(24px);
+    animation: ct-drift 16s ease-in-out infinite alternate;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  ::selection {
+    background: rgba(57, 231, 197, 0.28);
+    color: #f7fffd;
+  }
+}
+
+@layer components {
+  .ct-panel {
+    @apply relative overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.06] shadow-[0_24px_120px_rgba(0,0,0,0.45)] backdrop-blur-2xl;
+  }
+
+  .ct-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(57, 231, 197, 0.08), transparent 32%, transparent 68%, rgba(57, 231, 197, 0.06));
+  }
+
+  .ct-label {
+    @apply inline-flex items-center gap-2 text-[0.72rem] font-medium uppercase tracking-[0.28em] text-emerald-300/70;
+  }
+
+  .ct-chip {
+    @apply inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-[0.7rem] uppercase tracking-[0.24em] text-zinc-300/80;
+  }
+
+  .ct-data {
+    @apply font-mono text-sm tracking-[0.08em] text-zinc-100;
+  }
+
+  .ct-input {
+    @apply h-11 w-full rounded-2xl border border-white/10 bg-black/30 px-4 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300/60 focus:bg-black/45;
+  }
+
+  .ct-select {
+    @apply h-11 w-full rounded-2xl border border-white/10 bg-black/30 px-4 text-sm text-zinc-100 outline-none transition focus:border-emerald-300/60 focus:bg-black/45;
+  }
+
+  .ct-textarea {
+    @apply w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-500 focus:border-emerald-300/60 focus:bg-black/45;
+  }
+
+  .ct-button-primary {
+    @apply inline-flex items-center justify-center rounded-full border border-emerald-300/40 bg-emerald-300/90 px-5 py-3 text-[0.76rem] font-semibold uppercase tracking-[0.24em] text-[#03110d] transition hover:-translate-y-px hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .ct-button-secondary {
+    @apply inline-flex items-center justify-center rounded-full border border-white/10 bg-white/[0.05] px-5 py-3 text-[0.76rem] font-semibold uppercase tracking-[0.24em] text-zinc-100 transition hover:-translate-y-px hover:border-emerald-300/30 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .ct-button-ghost {
+    @apply inline-flex items-center justify-center rounded-full border border-transparent px-4 py-3 text-[0.76rem] font-semibold uppercase tracking-[0.24em] text-zinc-300 transition hover:-translate-y-px hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+@keyframes ct-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  100% {
+    transform: translate3d(0, -18px, 0) scale(1.04);
+  }
+}
