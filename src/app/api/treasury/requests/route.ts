@@ -21,18 +21,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "amount must be positive" }, { status: 400 });
   }
 
-  const requestEntry = await createTreasuryRequest({
-    roomId: body.roomId.trim(),
-    requestedBy: body.requestedBy.trim(),
-    amount: amount.toFixed(2),
-    assetSymbol: body.assetSymbol?.trim() || "USDT",
-    recipient: body.recipient.trim(),
-    memo: body.memo.trim(),
-  });
-
-  if (!requestEntry) {
-    return NextResponse.json({ ok: false, error: "room not found" }, { status: 404 });
+  if (!/^0x[a-fA-F0-9]{40}$/.test(body.recipient.trim())) {
+    return NextResponse.json({ ok: false, error: "recipient must be a valid EVM address" }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true, request: requestEntry });
+  try {
+    const requestEntry = await createTreasuryRequest({
+      roomId: body.roomId.trim(),
+      requestedBy: body.requestedBy.trim(),
+      amount: amount.toFixed(2),
+      assetSymbol: body.assetSymbol?.trim() || "USDT",
+      recipient: body.recipient.trim(),
+      memo: body.memo.trim(),
+    });
+
+    if (!requestEntry) {
+      return NextResponse.json({ ok: false, error: "room not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true, request: requestEntry });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "request_create_failed";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+  }
 }

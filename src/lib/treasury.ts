@@ -136,6 +136,14 @@ function defaultKeyAlias(room: Pick<TreasuryRoom, "name" | "slug">): string {
   return `wdk-${source}`.slice(0, 28);
 }
 
+function normalizeComparable(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isActiveRequestStatus(status: TreasurySpendRequest["status"]): boolean {
+  return status === "pending-approvals" || status === "approved";
+}
+
 function normalizeRoom(room: TreasuryRoom): TreasuryRoom {
   return {
     ...room,
@@ -214,6 +222,11 @@ export async function loadTreasuryRoom(roomId: string): Promise<TreasuryRoom | n
   return store.rooms.find((entry) => entry.id === roomId) ?? null;
 }
 
+export async function loadTreasuryRoomBySessionKey(sessionKey: string): Promise<TreasuryRoom | null> {
+  const store = await loadTreasuryStore();
+  return store.rooms.find((entry) => entry.sessionKey === sessionKey.trim()) ?? null;
+}
+
 export async function loadTreasuryRoomRequest(
   roomId: string,
   requestId: string,
@@ -233,6 +246,10 @@ export async function loadTreasuryRoomRequest(
 
 export async function createTreasuryRoom(input: CreateRoomInput): Promise<TreasuryRoom> {
   const store = await loadTreasuryStore();
+  const existing = store.rooms.find((entry) => entry.sessionKey === input.sessionKey.trim());
+  if (existing) {
+    throw new Error(`A treasury room is already bound to session ${input.sessionKey.trim()}.`);
+  }
   const now = new Date().toISOString();
   const room = normalizeRoom({
     id: createId("room"),
@@ -272,6 +289,23 @@ export async function createTreasuryRequest(input: CreateRequestInput): Promise<
     return null;
   }
 
+  const room = store.rooms[roomIndex];
+  const requestedAmount = numeric(input.amount);
+  if (requestedAmount > numeric(room.dailyLimit)) {
+    throw new Error(`Requested amount ${input.amount} exceeds the treasury daily limit of ${room.dailyLimit}.`);
+  }
+
+  const duplicate = room.requests.find(
+    (entry) =>
+      isActiveRequestStatus(entry.status)
+      && normalizeComparable(entry.amount) === normalizeComparable(input.amount)
+      && normalizeComparable(entry.recipient) === normalizeComparable(input.recipient)
+      && normalizeComparable(entry.memo) === normalizeComparable(input.memo),
+  );
+  if (duplicate) {
+    throw new Error(`A matching active request already exists (${duplicate.id}).`);
+  }
+
   const now = new Date().toISOString();
   const request: TreasurySpendRequest = {
     id: createId("req"),
@@ -287,7 +321,6 @@ export async function createTreasuryRequest(input: CreateRequestInput): Promise<
     updatedAt: now,
   };
 
-  const room = store.rooms[roomIndex];
   store.rooms[roomIndex] = normalizeRoom({
     ...room,
     requests: [request, ...room.requests],

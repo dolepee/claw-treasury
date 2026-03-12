@@ -15,6 +15,7 @@ Standalone ClawTreasury app for the Tether WDK hackathon.
   - record quorum approvals or rejections
   - execute approved payouts through WDK on Plasma
   - attach manual receipts only as a fallback
+- Telegram topics can now act as the primary treasury surface through the webhook bridge at `/api/telegram/webhook`
 
 ## Stack
 - Next.js (App Router) + TypeScript
@@ -69,6 +70,56 @@ Example:
 
 See [.env.example](./.env.example) for the exact env variable names.
 
+## Telegram Bridge
+ClawTreasury now supports a Telegram-first treasury flow:
+
+- `create treasury`
+- `show treasury`
+- `balance`
+- `history`
+- `pay 20 USDT to 0x... for design review`
+- `approve <ref>` or reply `approve` to the request message
+- `reject <ref>` or reply `reject reason` to the request message
+
+### Required Telegram env
+- `CLAW_TREASURY_TELEGRAM_BOT_TOKEN`
+- `CLAW_TREASURY_TELEGRAM_WEBHOOK_SECRET`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_APPROVERS`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_WDK_ALIAS`
+
+Optional defaults:
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_DAILY_LIMIT`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_ROUTE_COMMAND`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_NETWORK`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_ASSET_SYMBOL`
+- `CLAW_TREASURY_TELEGRAM_DEFAULT_ASSET_ADDRESS`
+
+### Webhook setup
+After deploying, register Telegram against the live route:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$CLAW_TREASURY_TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H "content-type: application/json" \
+  -d '{
+    "url": "https://claw-treasury.vercel.app/api/telegram/webhook",
+    "secret_token": "'"$CLAW_TREASURY_TELEGRAM_WEBHOOK_SECRET"'",
+    "allowed_updates": ["message"]
+  }'
+```
+
+Health / command discovery:
+
+```bash
+curl https://claw-treasury.vercel.app/api/telegram/webhook
+```
+
+### Current scope
+- Telegram topic or DM can create or use a treasury room bound to its chat context
+- Spend requests are created in chat and echoed back with a short ref
+- Approvers are matched from Telegram usernames against configured approver handles
+- When quorum is met, Claw executes through WDK and posts the tx hash back into the same thread
+- WhatsApp is still modeled in the data layer but not yet wired as a live transport
+
 ## Vercel
 - Recommended live setup:
   - create a Blob store
@@ -80,6 +131,7 @@ See [.env.example](./.env.example) for the exact env variable names.
 - `render.yaml` is included as an alternative deployment path with persistent disk storage
 
 ## API
+- `GET/POST /api/telegram/webhook`
 - `POST /api/treasury/rooms`
 - `POST /api/treasury/requests`
 - `POST /api/treasury/approvals`

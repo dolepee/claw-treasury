@@ -26,6 +26,20 @@ type ExecuteWithWdkResult = {
   gasReserve: string;
 };
 
+type WdkAliasSnapshot = {
+  walletAddress: string;
+  assetAddress: string | null;
+  balance: string | null;
+  gasReserve: string;
+};
+
+type WdkRoomSnapshot = {
+  walletAddress: string;
+  assetAddress: string;
+  balance: string;
+  gasReserve: string;
+};
+
 const DEFAULT_ASSET_DECIMALS = 6;
 const DEFAULT_NATIVE_DECIMALS = 18;
 
@@ -67,6 +81,10 @@ function parseBindings(): Record<string, WdkWalletBinding> {
 
 function getBinding(alias: string): WdkWalletBinding | null {
   return parseBindings()[alias] ?? null;
+}
+
+export function getConfiguredTreasuryOperatorKey(): string | null {
+  return process.env.CLAW_TREASURY_OPERATOR_KEY?.trim() || null;
 }
 
 function normalizeExplorerBaseUrl(room: TreasuryRoom, binding: WdkWalletBinding): string {
@@ -124,7 +142,7 @@ function getResolvedAssetAddress(room: TreasuryRoom, binding: WdkWalletBinding):
 
 export function loadTreasuryWdkRuntime(): TreasuryWdkRuntime {
   return {
-    operatorKeyConfigured: Boolean(process.env.CLAW_TREASURY_OPERATOR_KEY?.trim()),
+    operatorKeyConfigured: Boolean(getConfiguredTreasuryOperatorKey()),
     configuredAliases: Object.keys(parseBindings()),
   };
 }
@@ -137,8 +155,80 @@ export function isRoomWdkExecutable(room: TreasuryRoom, runtime: TreasuryWdkRunt
   );
 }
 
+export async function inspectWdkAlias(alias: string): Promise<WdkAliasSnapshot> {
+  const binding = getBinding(alias);
+  if (!binding) {
+    throw new Error("wdk_wallet_binding_missing");
+  }
+
+  const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
+  const wallet = new WalletManagerEvm(binding.seedPhrase, {
+    provider: binding.provider,
+    transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
+  });
+  const account = await wallet.getAccount(binding.accountIndex ?? 0);
+
+  try {
+    const walletAddress = await account.getAddress();
+    const [balance, gasReserve] = await Promise.all([
+      binding.assetAddress?.trim()
+        ? account.getTokenBalance(binding.assetAddress.trim()).then((value) => formatUnits(value, binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS, binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS))
+        : Promise.resolve<string | null>(null),
+      account.getBalance().then((value) => formatUnits(value, DEFAULT_NATIVE_DECIMALS, 6)),
+    ]);
+
+    return {
+      walletAddress,
+      assetAddress: binding.assetAddress?.trim() || null,
+      balance,
+      gasReserve,
+    };
+  } finally {
+    account.dispose();
+    wallet.dispose();
+  }
+}
+
+export async function inspectTreasuryRoomWithWdk(room: TreasuryRoom): Promise<WdkRoomSnapshot> {
+  const binding = getBinding(room.wdkKeyAlias);
+  if (!binding) {
+    throw new Error("wdk_wallet_binding_missing");
+  }
+
+  const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
+  const wallet = new WalletManagerEvm(binding.seedPhrase, {
+    provider: binding.provider,
+    transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
+  });
+  const account = await wallet.getAccount(binding.accountIndex ?? 0);
+
+  try {
+    const walletAddress = await account.getAddress();
+    if (!isRuntimePlaceholder(room.walletAddress) && room.walletAddress.toLowerCase() !== walletAddress.toLowerCase()) {
+      throw new Error("wdk_wallet_address_mismatch");
+    }
+
+    const assetAddress = getResolvedAssetAddress(room, binding);
+    const assetDecimals = binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS;
+    const [balance, gasReserve] = await Promise.all([
+      account.getTokenBalance(assetAddress).then((value) => formatUnits(value, assetDecimals, assetDecimals)),
+      account.getBalance().then((value) => formatUnits(value, DEFAULT_NATIVE_DECIMALS, 6)),
+    ]);
+
+    return {
+      walletAddress,
+      assetAddress,
+      balance,
+      gasReserve,
+    };
+  } finally {
+    account.dispose();
+    wallet.dispose();
+  }
+}
+
 export async function executeTreasuryRequestWithWdk(input: ExecuteWithWdkInput): Promise<ExecuteWithWdkResult> {
-  const configuredOperatorKey = process.env.CLAW_TREASURY_OPERATOR_KEY?.trim();
+  const configuredOperatorKey = getConfiguredTreasuryOperatorKey();
   if (!configuredOperatorKey) {
     throw new Error("wdk_operator_key_missing");
   }

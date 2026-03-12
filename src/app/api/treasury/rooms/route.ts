@@ -56,33 +56,38 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "quorum must be between 1 and the approver count" }, { status: 400 });
   }
 
-  const room = await createTreasuryRoom({
-    name: body.name.trim(),
-    channel: body.channel,
-    channelLabel: body.channelLabel?.trim() || body.name.trim(),
-    routeCommand: body.routeCommand?.trim() || "claw-topic",
-    sessionKey: body.sessionKey.trim(),
-    walletAddress: body.walletAddress?.trim() || "pending-wallet",
-    network: body.network?.trim() || "Plasma",
-    assetSymbol: body.assetSymbol?.trim() || "USD₮",
-    assetAddress: body.assetAddress?.trim() || "runtime-configured",
-    balance: body.balance?.trim() || "0.00",
-    gasReserve: body.gasReserve?.trim() || "",
-    quorum,
-    dailyLimit: body.dailyLimit?.trim() || "0.00",
-    wdkKeyAlias: body.wdkKeyAlias?.trim() || "",
-    agentMode: isTreasuryAgentMode(body.agentMode) ? body.agentMode : "execute-after-quorum",
-    notes: body.notes?.trim() || "",
-    status: isTreasuryStatus(body.status) ? body.status : "active",
-    approvers: body.approvers.map((entry, index) => ({
-      id: entry.id || `approver_${index + 1}`,
-      name: entry.name.trim(),
-      role: entry.role.trim() || "approver",
-      handle: entry.handle.trim() || entry.name.trim(),
-    })),
-  });
+  try {
+    const room = await createTreasuryRoom({
+      name: body.name.trim(),
+      channel: body.channel,
+      channelLabel: body.channelLabel?.trim() || body.name.trim(),
+      routeCommand: body.routeCommand?.trim() || "claw-topic",
+      sessionKey: body.sessionKey.trim(),
+      walletAddress: body.walletAddress?.trim() || "pending-wallet",
+      network: body.network?.trim() || "Plasma",
+      assetSymbol: body.assetSymbol?.trim() || "USD₮",
+      assetAddress: body.assetAddress?.trim() || "runtime-configured",
+      balance: body.balance?.trim() || "0.00",
+      gasReserve: body.gasReserve?.trim() || "",
+      quorum,
+      dailyLimit: body.dailyLimit?.trim() || "0.00",
+      wdkKeyAlias: body.wdkKeyAlias?.trim() || "",
+      agentMode: isTreasuryAgentMode(body.agentMode) ? body.agentMode : "execute-after-quorum",
+      notes: body.notes?.trim() || "",
+      status: isTreasuryStatus(body.status) ? body.status : "active",
+      approvers: body.approvers.map((entry, index) => ({
+        id: entry.id || `approver_${index + 1}`,
+        name: entry.name.trim(),
+        role: entry.role.trim() || "approver",
+        handle: entry.handle.trim() || entry.name.trim(),
+      })),
+    });
 
-  return NextResponse.json({ ok: true, room });
+    return NextResponse.json({ ok: true, room });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "room_create_failed";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+  }
 }
 
 export async function PATCH(request: NextRequest) {
