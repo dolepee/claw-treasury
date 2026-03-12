@@ -16,6 +16,7 @@ export async function GET() {
       "balance",
       "history",
       "allowlist",
+      "rotate wallet",
       "set approvers @alice @bob",
       "set quorum 2",
       "set daily limit 250",

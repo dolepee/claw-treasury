@@ -36,6 +36,7 @@ type CreateRoomForm = {
   quorum: string;
   dailyLimit: string;
   wdkKeyAlias: string;
+  wdkAccountIndex: string;
   agentMode: TreasuryAgentMode;
   notes: string;
   approvers: string;
@@ -50,6 +51,7 @@ type DrawerForm = {
   gasReserve: string;
   dailyLimit: string;
   wdkKeyAlias: string;
+  wdkAccountIndex: string;
   agentMode: TreasuryAgentMode;
   notes: string;
   allowlist: string;
@@ -88,6 +90,7 @@ const defaultRoomForm: CreateRoomForm = {
   quorum: "2",
   dailyLimit: "",
   wdkKeyAlias: "",
+  wdkAccountIndex: "0",
   agentMode: "execute-after-quorum",
   notes: "",
   approvers: "",
@@ -407,6 +410,7 @@ function mapRoomToDrawer(room: TreasuryRoom): DrawerForm {
     gasReserve: room.gasReserve,
     dailyLimit: room.dailyLimit,
     wdkKeyAlias: room.wdkKeyAlias,
+    wdkAccountIndex: String(room.wdkAccountIndex),
     agentMode: room.agentMode,
     notes: room.notes,
     allowlist: formatAllowedRecipients(room.allowedRecipients),
@@ -778,6 +782,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             body: JSON.stringify({
               ...createForm,
               quorum: Number(createForm.quorum),
+              wdkAccountIndex: Number(createForm.wdkAccountIndex),
               approvers,
               allowedRecipients,
             }),
@@ -989,6 +994,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               ...drawerForm,
+              wdkAccountIndex: Number(drawerForm.wdkAccountIndex),
               allowedRecipients,
             }),
           });
@@ -1913,6 +1919,10 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                   ))}
                 </select>
               </label>
+              <label className="space-y-2 text-sm text-zinc-300">
+                WDK account index
+                <input className="ct-input font-mono" value={createForm.wdkAccountIndex} onChange={(event) => setRoomField("wdkAccountIndex", event.target.value)} placeholder="0" />
+              </label>
             </div>
 
             <div className="mt-4 grid gap-4 xl:grid-cols-3">
@@ -2167,6 +2177,15 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                       value={drawerForm.wdkKeyAlias}
                       onChange={(event) => setDrawerField("wdkKeyAlias", event.target.value)}
                       placeholder="wdk-plasma-main"
+                    />
+                  </label>
+                  <label className="space-y-2 text-sm text-zinc-300">
+                    WDK account index
+                    <input
+                      className="ct-input font-mono"
+                      value={drawerForm.wdkAccountIndex}
+                      onChange={(event) => setDrawerField("wdkAccountIndex", event.target.value)}
+                      placeholder="0"
                     />
                   </label>
                   <label className="space-y-2 text-sm text-zinc-300">

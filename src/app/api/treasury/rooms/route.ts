@@ -10,10 +10,10 @@ type Body = {
   routeCommand?: string;
   sessionKey?: string;
   walletAddress?: string;
+  balance?: string;
   network?: string;
   assetSymbol?: string;
   assetAddress?: string;
-  balance?: string;
   gasReserve?: string;
   quorum?: number;
   dailyLimit?: string;
@@ -121,6 +121,7 @@ export async function PATCH(request: NextRequest) {
       routeCommand: body.routeCommand,
       sessionKey: body.sessionKey,
       walletAddress: body.walletAddress,
+      balance: body.balance,
       dailyLimit: body.dailyLimit,
       gasReserve: body.gasReserve,
       wdkKeyAlias: body.wdkKeyAlias,

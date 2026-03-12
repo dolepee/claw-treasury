@@ -24,6 +24,7 @@ import {
   loadTreasuryRoomBySessionKey,
   recordTreasuryApproval,
   recordTreasuryExecution,
+  suggestNextTreasuryWdkAccountIndex,
   suggestTreasuryWdkAccountIndex,
   updateTreasuryRoomControl,
 } from "@/lib/treasury";
@@ -41,6 +42,7 @@ type ParsedCommand =
   | { kind: "show-treasury" }
   | { kind: "history" }
   | { kind: "allowlist" }
+  | { kind: "rotate-wallet" }
   | { kind: "set-approvers"; handles: string[] }
   | { kind: "set-quorum"; quorum: number }
   | { kind: "set-daily-limit"; dailyLimit: string }
@@ -75,6 +77,7 @@ function commandHelp(): string {
     "balance",
     "history",
     "allowlist",
+    "rotate wallet",
     "set approvers @alice @bob",
     "set quorum 2",
     "set daily limit 250",
@@ -116,6 +119,10 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
 
   if (/^\/?(allowlist|show\s+allowlist)\b/.test(lower)) {
     return { kind: "allowlist" };
+  }
+
+  if (/^\/?(rotate\s+wallet|rotate\s+signer|new\s+wallet)\b/.test(lower)) {
+    return { kind: "rotate-wallet" };
   }
 
   const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
@@ -422,6 +429,56 @@ async function handleAllowlist(context: TelegramContext, room: TreasuryRoom | nu
   }
 
   await reply(context, summarizeAllowlistBoard(room));
+}
+
+async function handleRotateWallet(context: TelegramContext, room: TreasuryRoom | null): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can rotate the treasury wallet.");
+    return;
+  }
+
+  const activeRequests = room.requests.filter((entry) => entry.status === "pending-approvals" || entry.status === "approved");
+  if (activeRequests.length > 0) {
+    await reply(context, "Wallet rotation is blocked while spend requests are still pending or approved.");
+    return;
+  }
+
+  try {
+    const nextAccountIndex = await suggestNextTreasuryWdkAccountIndex(room.wdkKeyAlias, room.id);
+    const nextSnapshot = await inspectWdkAlias(room.wdkKeyAlias, nextAccountIndex);
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      walletAddress: nextSnapshot.walletAddress,
+      balance: nextSnapshot.balance || "0.00",
+      gasReserve: nextSnapshot.gasReserve,
+      wdkAccountIndex: nextAccountIndex,
+      notes: `${room.notes}\nRotated wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+
+    if (!updatedRoom) {
+      throw new Error("wallet_rotation_failed");
+    }
+
+    await reply(
+      context,
+      [
+        `Treasury wallet rotated for ${updatedRoom.name}.`,
+        `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
+        `Wallet: ${updatedRoom.walletAddress}`,
+        `${updatedRoom.assetSymbol} balance: ${nextSnapshot.balance || updatedRoom.balance}`,
+        `Native gas: ${nextSnapshot.gasReserve}`,
+      ].join("\n"),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not rotate the treasury wallet.";
+    await reply(context, `Wallet rotation failed.\n${message}`);
+  }
 }
 
 function requirePolicyActor(room: TreasuryRoom | null, context: TelegramContext): TreasuryApprover | null {
@@ -849,6 +906,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
 
   if (command.kind === "allowlist") {
     await handleAllowlist(context, room);
+    return { handled: true };
+  }
+
+  if (command.kind === "rotate-wallet") {
+    await handleRotateWallet(context, room);
     return { handled: true };
   }
 

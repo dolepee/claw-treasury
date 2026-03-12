@@ -82,6 +82,7 @@ type UpdateRoomControlInput = {
   routeCommand?: string;
   sessionKey?: string;
   walletAddress?: string;
+  balance?: string;
   dailyLimit?: string;
   gasReserve?: string;
   wdkKeyAlias?: string;
@@ -406,6 +407,26 @@ export async function suggestTreasuryWdkAccountIndex(alias: string, sessionKey: 
   return usedIndexes.length === 0 ? 0 : Math.max(...usedIndexes) + 1;
 }
 
+export async function suggestNextTreasuryWdkAccountIndex(alias: string, roomId: string): Promise<number> {
+  const normalizedAlias = alias.trim();
+  if (!normalizedAlias) {
+    return 0;
+  }
+
+  const store = await loadTreasuryStore();
+  const room = store.rooms.find((entry) => entry.id === roomId);
+  if (!room) {
+    return 0;
+  }
+
+  const usedIndexes = store.rooms
+    .filter((entry) => entry.wdkKeyAlias === normalizedAlias && entry.id !== roomId)
+    .map((entry) => normalizeAccountIndex(entry.wdkAccountIndex));
+
+  const nextAvailableIndex = usedIndexes.length === 0 ? 0 : Math.max(...usedIndexes) + 1;
+  return Math.max(nextAvailableIndex, normalizeAccountIndex(room.wdkAccountIndex) + 1);
+}
+
 export async function recordTreasuryApproval(input: RecordApprovalInput): Promise<TreasurySpendRequest | null> {
   const store = await loadTreasuryStore();
   const roomIndex = store.rooms.findIndex((entry) => entry.id === input.roomId);
@@ -543,6 +564,7 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
     routeCommand: input.routeCommand?.trim() || room.routeCommand,
     sessionKey: input.sessionKey?.trim() || room.sessionKey,
     walletAddress: input.walletAddress?.trim() || room.walletAddress,
+    balance: input.balance?.trim() || room.balance,
     dailyLimit: input.dailyLimit?.trim() || room.dailyLimit,
     gasReserve: input.gasReserve?.trim() || room.gasReserve,
     wdkKeyAlias: input.wdkKeyAlias?.trim() || room.wdkKeyAlias,
