@@ -45,6 +45,7 @@ type ParsedCommand =
   | { kind: "allowlist" }
   | { kind: "rotate-wallet"; sweep: boolean }
   | { kind: "rollback-wallet" }
+  | { kind: "set-wallet-index"; accountIndex: number; sweep: boolean }
   | { kind: "set-approvers"; handles: string[] }
   | { kind: "set-quorum"; quorum: number }
   | { kind: "set-daily-limit"; dailyLimit: string }
@@ -82,6 +83,8 @@ function commandHelp(): string {
     "rotate wallet",
     "rotate wallet sweep",
     "rollback wallet",
+    "set wallet index 0",
+    "set wallet index 0 sweep",
     "set approvers @alice @bob",
     "set quorum 2",
     "set daily limit 250",
@@ -132,6 +135,17 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
 
   if (/^\/?(rollback\s+wallet|revert\s+wallet|undo\s+wallet)\b/.test(lower)) {
     return { kind: "rollback-wallet" };
+  }
+
+  const setWalletIndexMatch = text.match(
+    /^\/?(?:set\s+wallet\s+index|wallet\s+index|bind\s+wallet)\b\s+([0-9]+)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i,
+  );
+  if (setWalletIndexMatch) {
+    return {
+      kind: "set-wallet-index",
+      accountIndex: Math.max(0, Math.floor(Number(setWalletIndexMatch[1]))),
+      sweep: Boolean(setWalletIndexMatch[2]),
+    };
   }
 
   const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
@@ -596,6 +610,109 @@ async function handleRollbackWallet(context: TelegramContext, room: TreasuryRoom
   }
 }
 
+async function handleSetWalletIndex(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "set-wallet-index" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can rebind the treasury wallet.");
+    return;
+  }
+
+  const activeRequests = room.requests.filter((entry) => entry.status === "pending-approvals" || entry.status === "approved");
+  if (activeRequests.length > 0) {
+    await reply(context, "Wallet rebinding is blocked while spend requests are still pending or approved.");
+    return;
+  }
+
+  if (room.wdkAccountIndex === input.accountIndex) {
+    await reply(context, `This treasury is already bound to ${room.wdkKeyAlias} #${room.wdkAccountIndex}.`);
+    return;
+  }
+
+  try {
+    const targetSnapshot = await inspectWdkAlias(room.wdkKeyAlias, input.accountIndex);
+    const historyEntry = {
+      walletAddress: room.walletAddress,
+      wdkKeyAlias: room.wdkKeyAlias,
+      wdkAccountIndex: room.wdkAccountIndex,
+      balance: room.balance,
+      gasReserve: room.gasReserve,
+      recordedAt: new Date().toISOString(),
+    };
+
+    if (input.sweep) {
+      const sweep = await rotateTreasuryWalletWithSweep({
+        room,
+        nextAccountIndex: input.accountIndex,
+      });
+      const updatedRoom = await updateTreasuryRoomControl({
+        roomId: room.id,
+        walletAddress: sweep.toWalletAddress,
+        balance: sweep.toBalance,
+        gasReserve: "0",
+        wdkAccountIndex: input.accountIndex,
+        walletHistory: [...room.walletHistory, historyEntry],
+        notes: `${room.notes}\nRebound wallet index from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      });
+
+      if (!updatedRoom) {
+        throw new Error("wallet_rebind_failed");
+      }
+
+      await reply(
+        context,
+        [
+          `Treasury wallet rebound for ${updatedRoom.name}.`,
+          `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
+          `Wallet: ${updatedRoom.walletAddress}`,
+          sweep.txHash
+            ? `Sweep: ${sweep.sweptAmount} ${updatedRoom.assetSymbol} moved into the rebound wallet.`
+            : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+          ...(sweep.txHash ? [`Explorer: ${sweep.explorerUrl}`] : []),
+          `New ${updatedRoom.assetSymbol} balance: ${updatedRoom.balance}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      walletAddress: targetSnapshot.walletAddress,
+      balance: targetSnapshot.balance || "0.00",
+      gasReserve: targetSnapshot.gasReserve,
+      wdkAccountIndex: input.accountIndex,
+      walletHistory: [...room.walletHistory, historyEntry],
+      notes: `${room.notes}\nSet wallet index from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+
+    if (!updatedRoom) {
+      throw new Error("wallet_rebind_failed");
+    }
+
+    await reply(
+      context,
+      [
+        `Treasury wallet rebound for ${updatedRoom.name}.`,
+        `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
+        `Wallet: ${updatedRoom.walletAddress}`,
+        `${updatedRoom.assetSymbol} balance: ${updatedRoom.balance}`,
+        `Native gas: ${updatedRoom.gasReserve}`,
+      ].join("\n"),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not rebind the treasury wallet.";
+    await reply(context, `Wallet rebinding failed.\n${message}`);
+  }
+}
+
 function requirePolicyActor(room: TreasuryRoom | null, context: TelegramContext): TreasuryApprover | null {
   if (!room) {
     return null;
@@ -1031,6 +1148,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
 
   if (command.kind === "rollback-wallet") {
     await handleRollbackWallet(context, room);
+    return { handled: true };
+  }
+
+  if (command.kind === "set-wallet-index") {
+    await handleSetWalletIndex(context, room, command);
     return { handled: true };
   }
 

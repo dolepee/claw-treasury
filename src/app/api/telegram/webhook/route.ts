@@ -19,6 +19,8 @@ export async function GET() {
       "rotate wallet",
       "rotate wallet sweep",
       "rollback wallet",
+      "set wallet index 0",
+      "set wallet index 0 sweep",
       "set approvers @alice @bob",
       "set quorum 2",
       "set daily limit 250",
