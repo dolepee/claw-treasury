@@ -17,6 +17,7 @@ export async function GET() {
       "history",
       "allowlist",
       "rotate wallet",
+      "rotate wallet sweep",
       "rollback wallet",
       "set approvers @alice @bob",
       "set quorum 2",

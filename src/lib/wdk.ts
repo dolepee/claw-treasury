@@ -16,6 +16,11 @@ type ExecuteWithWdkInput = {
   operatorKey: string;
 };
 
+type RotateWithSweepInput = {
+  room: TreasuryRoom;
+  nextAccountIndex: number;
+};
+
 type ExecuteWithWdkResult = {
   txHash: string;
   explorerUrl: string;
@@ -24,6 +29,18 @@ type ExecuteWithWdkResult = {
   walletAddress: string;
   balance: string;
   gasReserve: string;
+};
+
+type RotateWithSweepResult = {
+  txHash: string | null;
+  explorerUrl: string | null;
+  feeWei: string | null;
+  quoteFeeWei: string | null;
+  fromWalletAddress: string;
+  toWalletAddress: string;
+  toBalance: string;
+  fromGasReserve: string;
+  sweptAmount: string;
 };
 
 type WdkAliasSnapshot = {
@@ -319,6 +336,101 @@ export async function executeTreasuryRequestWithWdk(input: ExecuteWithWdkInput):
     };
   } finally {
     account.dispose();
+    wallet.dispose();
+  }
+}
+
+export async function rotateTreasuryWalletWithSweep(input: RotateWithSweepInput): Promise<RotateWithSweepResult> {
+  const binding = getBinding(input.room.wdkKeyAlias);
+  if (!binding) {
+    throw new Error("wdk_wallet_binding_missing");
+  }
+
+  if (input.room.agentMode !== "execute-after-quorum") {
+    throw new Error("wdk_rotation_sweep_not_enabled_for_room");
+  }
+
+  const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
+  const wallet = new WalletManagerEvm(binding.seedPhrase, {
+    provider: binding.provider,
+    transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
+  });
+
+  const currentAccount = await wallet.getAccount(resolveAccountIndex(input.room, binding));
+  const nextAccount = await wallet.getAccount(resolveAccountIndex(null, binding, input.nextAccountIndex));
+
+  try {
+    const assetAddress = getResolvedAssetAddress(input.room, binding);
+    const assetDecimals = binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS;
+    const explorerBaseUrl = normalizeExplorerBaseUrl(input.room, binding);
+
+    const [fromWalletAddress, toWalletAddress, currentTokenBalance] = await Promise.all([
+      currentAccount.getAddress(),
+      nextAccount.getAddress(),
+      currentAccount.getTokenBalance(assetAddress),
+    ]);
+
+    if (fromWalletAddress.toLowerCase() === toWalletAddress.toLowerCase()) {
+      throw new Error("wdk_wallet_rotation_target_matches_current");
+    }
+
+    if (currentTokenBalance === BigInt(0)) {
+      const [toBalance, fromGasReserve] = await Promise.all([
+        nextAccount.getTokenBalance(assetAddress),
+        currentAccount.getBalance(),
+      ]);
+
+      return {
+        txHash: null,
+        explorerUrl: null,
+        feeWei: null,
+        quoteFeeWei: null,
+        fromWalletAddress,
+        toWalletAddress,
+        toBalance: formatUnits(toBalance, assetDecimals, assetDecimals),
+        fromGasReserve: formatUnits(fromGasReserve, DEFAULT_NATIVE_DECIMALS, 6),
+        sweptAmount: "0.00",
+      };
+    }
+
+    const quote = await currentAccount.quoteTransfer({
+      token: assetAddress,
+      recipient: toWalletAddress,
+      amount: currentTokenBalance,
+    });
+    const currentNativeBalance = await currentAccount.getBalance();
+
+    if (currentNativeBalance < quote.fee) {
+      throw new Error(
+        `WDK wallet ${fromWalletAddress} has ${formatUnits(currentNativeBalance, DEFAULT_NATIVE_DECIMALS, 6)} native gas on ${input.room.network}, but the estimated fee to sweep into the rotated wallet is ${formatUnits(quote.fee, DEFAULT_NATIVE_DECIMALS, 6)}. Fund the current wallet with native gas before retrying rotation with sweep.`,
+      );
+    }
+
+    const result = await currentAccount.transfer({
+      token: assetAddress,
+      recipient: toWalletAddress,
+      amount: currentTokenBalance,
+    });
+
+    const [toBalance, fromGasReserve] = await Promise.all([
+      nextAccount.getTokenBalance(assetAddress),
+      currentAccount.getBalance(),
+    ]);
+
+    return {
+      txHash: result.hash,
+      explorerUrl: explorerBaseUrl ? `${explorerBaseUrl}${result.hash}` : result.hash,
+      feeWei: result.fee.toString(),
+      quoteFeeWei: quote.fee.toString(),
+      fromWalletAddress,
+      toWalletAddress,
+      toBalance: formatUnits(toBalance, assetDecimals, assetDecimals),
+      fromGasReserve: formatUnits(fromGasReserve, DEFAULT_NATIVE_DECIMALS, 6),
+      sweptAmount: formatUnits(currentTokenBalance, assetDecimals, assetDecimals),
+    };
+  } finally {
+    currentAccount.dispose();
+    nextAccount.dispose();
     wallet.dispose();
   }
 }

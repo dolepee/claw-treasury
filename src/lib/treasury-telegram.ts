@@ -34,6 +34,7 @@ import {
   getConfiguredTreasuryOperatorKey,
   inspectTreasuryRoomWithWdk,
   inspectWdkAlias,
+  rotateTreasuryWalletWithSweep,
 } from "@/lib/wdk";
 
 type ParsedCommand =
@@ -42,7 +43,7 @@ type ParsedCommand =
   | { kind: "show-treasury" }
   | { kind: "history" }
   | { kind: "allowlist" }
-  | { kind: "rotate-wallet" }
+  | { kind: "rotate-wallet"; sweep: boolean }
   | { kind: "rollback-wallet" }
   | { kind: "set-approvers"; handles: string[] }
   | { kind: "set-quorum"; quorum: number }
@@ -79,6 +80,7 @@ function commandHelp(): string {
     "history",
     "allowlist",
     "rotate wallet",
+    "rotate wallet sweep",
     "rollback wallet",
     "set approvers @alice @bob",
     "set quorum 2",
@@ -123,8 +125,9 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     return { kind: "allowlist" };
   }
 
-  if (/^\/?(rotate\s+wallet|rotate\s+signer|new\s+wallet)\b/.test(lower)) {
-    return { kind: "rotate-wallet" };
+  const rotateWalletMatch = text.match(/^\/?(?:rotate\s+wallet|rotate\s+signer|new\s+wallet)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i);
+  if (rotateWalletMatch) {
+    return { kind: "rotate-wallet", sweep: Boolean(rotateWalletMatch[1]) };
   }
 
   if (/^\/?(rollback\s+wallet|revert\s+wallet|undo\s+wallet)\b/.test(lower)) {
@@ -437,7 +440,11 @@ async function handleAllowlist(context: TelegramContext, room: TreasuryRoom | nu
   await reply(context, summarizeAllowlistBoard(room));
 }
 
-async function handleRotateWallet(context: TelegramContext, room: TreasuryRoom | null): Promise<void> {
+async function handleRotateWallet(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "rotate-wallet" }>,
+): Promise<void> {
   if (!room) {
     await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
     return;
@@ -458,23 +465,58 @@ async function handleRotateWallet(context: TelegramContext, room: TreasuryRoom |
   try {
     const nextAccountIndex = await suggestNextTreasuryWdkAccountIndex(room.wdkKeyAlias, room.id);
     const nextSnapshot = await inspectWdkAlias(room.wdkKeyAlias, nextAccountIndex);
+    const historyEntry = {
+      walletAddress: room.walletAddress,
+      wdkKeyAlias: room.wdkKeyAlias,
+      wdkAccountIndex: room.wdkAccountIndex,
+      balance: room.balance,
+      gasReserve: room.gasReserve,
+      recordedAt: new Date().toISOString(),
+    };
+
+    if (input.sweep) {
+      const sweep = await rotateTreasuryWalletWithSweep({
+        room,
+        nextAccountIndex,
+      });
+      const updatedRoom = await updateTreasuryRoomControl({
+        roomId: room.id,
+        walletAddress: sweep.toWalletAddress,
+        balance: sweep.toBalance,
+        gasReserve: "0",
+        wdkAccountIndex: nextAccountIndex,
+        walletHistory: [...room.walletHistory, historyEntry],
+        notes: `${room.notes}\nRotated wallet with sweep from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      });
+
+      if (!updatedRoom) {
+        throw new Error("wallet_rotation_failed");
+      }
+
+      await reply(
+        context,
+        [
+          `Treasury wallet rotated for ${updatedRoom.name}.`,
+          `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
+          `Wallet: ${updatedRoom.walletAddress}`,
+          sweep.txHash
+            ? `Sweep: ${sweep.sweptAmount} ${updatedRoom.assetSymbol} moved from ${sweep.fromWalletAddress} to ${sweep.toWalletAddress}`
+            : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+          ...(sweep.txHash ? [`Explorer: ${sweep.explorerUrl}`] : []),
+          `New ${updatedRoom.assetSymbol} balance: ${updatedRoom.balance}`,
+          `Old wallet gas remaining: ${sweep.fromGasReserve}`,
+        ].join("\n"),
+      );
+      return;
+    }
+
     const updatedRoom = await updateTreasuryRoomControl({
       roomId: room.id,
       walletAddress: nextSnapshot.walletAddress,
       balance: nextSnapshot.balance || "0.00",
       gasReserve: nextSnapshot.gasReserve,
       wdkAccountIndex: nextAccountIndex,
-      walletHistory: [
-        ...room.walletHistory,
-        {
-          walletAddress: room.walletAddress,
-          wdkKeyAlias: room.wdkKeyAlias,
-          wdkAccountIndex: room.wdkAccountIndex,
-          balance: room.balance,
-          gasReserve: room.gasReserve,
-          recordedAt: new Date().toISOString(),
-        },
-      ],
+      walletHistory: [...room.walletHistory, historyEntry],
       notes: `${room.notes}\nRotated wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
     });
 
@@ -983,7 +1025,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
   }
 
   if (command.kind === "rotate-wallet") {
-    await handleRotateWallet(context, room);
+    await handleRotateWallet(context, room, command);
     return { handled: true };
   }
 
