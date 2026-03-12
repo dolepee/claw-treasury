@@ -14,6 +14,7 @@ import {
   TreasuryRoomStatus,
   TreasurySpendRequest,
   TreasuryStore,
+  TreasuryWalletBindingSnapshot,
 } from "@/lib/types";
 
 const treasuryFile = path.join(getDataDir(), "treasury.json");
@@ -44,6 +45,7 @@ type CreateRoomInput = {
   status?: TreasuryRoomStatus;
   approvers: TreasuryApprover[];
   allowedRecipients?: TreasuryAllowedRecipient[];
+  walletHistory?: TreasuryWalletBindingSnapshot[];
 };
 
 type CreateRequestInput = {
@@ -91,6 +93,7 @@ type UpdateRoomControlInput = {
   quorum?: number;
   approvers?: TreasuryApprover[];
   allowedRecipients?: TreasuryAllowedRecipient[];
+  walletHistory?: TreasuryWalletBindingSnapshot[];
   notes?: string;
 };
 
@@ -168,6 +171,7 @@ function normalizeRoom(room: TreasuryRoom): TreasuryRoom {
     wdkAccountIndex: normalizeAccountIndex(room.wdkAccountIndex),
     agentMode: isTreasuryAgentMode(room.agentMode) ? room.agentMode : "execute-after-quorum",
     allowedRecipients: normalizeAllowedRecipients(room.allowedRecipients ?? []),
+    walletHistory: normalizeWalletHistory(room.walletHistory ?? []),
     requests: sortRequests(room.requests.map(normalizeRequest)),
   };
 }
@@ -215,6 +219,17 @@ function normalizeAllowedRecipients(allowedRecipients: TreasuryAllowedRecipient[
     }))
     .filter((entry, index, collection) => collection.findIndex((candidate) => normalizeComparable(candidate.address) === normalizeComparable(entry.address)) === index)
     .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function normalizeWalletHistory(walletHistory: TreasuryWalletBindingSnapshot[]): TreasuryWalletBindingSnapshot[] {
+  return walletHistory.map((entry) => ({
+    walletAddress: entry.walletAddress.trim(),
+    wdkKeyAlias: entry.wdkKeyAlias.trim(),
+    wdkAccountIndex: normalizeAccountIndex(entry.wdkAccountIndex),
+    balance: entry.balance.trim() || "0.00",
+    gasReserve: entry.gasReserve.trim() || "0",
+    recordedAt: entry.recordedAt,
+  }));
 }
 
 function normalizeStore(store: TreasuryStore): TreasuryStore {
@@ -319,6 +334,7 @@ export async function createTreasuryRoom(input: CreateRoomInput): Promise<Treasu
     status: input.status ?? "active",
     approvers: input.approvers,
     allowedRecipients: input.allowedRecipients ?? [],
+    walletHistory: input.walletHistory ?? [],
     notes: input.notes,
     requests: [],
     createdAt: now,
@@ -553,6 +569,9 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
   const nextAllowedRecipients = Array.isArray(input.allowedRecipients)
     ? normalizeAllowedRecipients(input.allowedRecipients)
     : room.allowedRecipients;
+  const nextWalletHistory = Array.isArray(input.walletHistory)
+    ? normalizeWalletHistory(input.walletHistory)
+    : room.walletHistory;
   const nextQuorum = input.quorum ?? room.quorum;
   if (!Number.isFinite(nextQuorum) || nextQuorum < 1 || nextQuorum > nextApprovers.length) {
     throw new Error(`Quorum must be between 1 and ${nextApprovers.length}.`);
@@ -573,6 +592,7 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
     quorum: nextQuorum,
     approvers: nextApprovers,
     allowedRecipients: nextAllowedRecipients,
+    walletHistory: nextWalletHistory,
     notes: input.notes !== undefined ? input.notes.trim() : room.notes,
     updatedAt: now,
   });

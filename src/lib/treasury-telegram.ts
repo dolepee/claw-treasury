@@ -43,6 +43,7 @@ type ParsedCommand =
   | { kind: "history" }
   | { kind: "allowlist" }
   | { kind: "rotate-wallet" }
+  | { kind: "rollback-wallet" }
   | { kind: "set-approvers"; handles: string[] }
   | { kind: "set-quorum"; quorum: number }
   | { kind: "set-daily-limit"; dailyLimit: string }
@@ -78,6 +79,7 @@ function commandHelp(): string {
     "history",
     "allowlist",
     "rotate wallet",
+    "rollback wallet",
     "set approvers @alice @bob",
     "set quorum 2",
     "set daily limit 250",
@@ -123,6 +125,10 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
 
   if (/^\/?(rotate\s+wallet|rotate\s+signer|new\s+wallet)\b/.test(lower)) {
     return { kind: "rotate-wallet" };
+  }
+
+  if (/^\/?(rollback\s+wallet|revert\s+wallet|undo\s+wallet)\b/.test(lower)) {
+    return { kind: "rollback-wallet" };
   }
 
   const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
@@ -458,6 +464,17 @@ async function handleRotateWallet(context: TelegramContext, room: TreasuryRoom |
       balance: nextSnapshot.balance || "0.00",
       gasReserve: nextSnapshot.gasReserve,
       wdkAccountIndex: nextAccountIndex,
+      walletHistory: [
+        ...room.walletHistory,
+        {
+          walletAddress: room.walletAddress,
+          wdkKeyAlias: room.wdkKeyAlias,
+          wdkAccountIndex: room.wdkAccountIndex,
+          balance: room.balance,
+          gasReserve: room.gasReserve,
+          recordedAt: new Date().toISOString(),
+        },
+      ],
       notes: `${room.notes}\nRotated wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
     });
 
@@ -478,6 +495,62 @@ async function handleRotateWallet(context: TelegramContext, room: TreasuryRoom |
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not rotate the treasury wallet.";
     await reply(context, `Wallet rotation failed.\n${message}`);
+  }
+}
+
+async function handleRollbackWallet(context: TelegramContext, room: TreasuryRoom | null): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can roll back the treasury wallet.");
+    return;
+  }
+
+  const activeRequests = room.requests.filter((entry) => entry.status === "pending-approvals" || entry.status === "approved");
+  if (activeRequests.length > 0) {
+    await reply(context, "Wallet rollback is blocked while spend requests are still pending or approved.");
+    return;
+  }
+
+  const previousBinding = room.walletHistory[room.walletHistory.length - 1];
+  if (!previousBinding) {
+    await reply(context, "No previous wallet binding is stored for rollback.");
+    return;
+  }
+
+  try {
+    const restoredRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      walletAddress: previousBinding.walletAddress,
+      balance: previousBinding.balance,
+      gasReserve: previousBinding.gasReserve,
+      wdkKeyAlias: previousBinding.wdkKeyAlias,
+      wdkAccountIndex: previousBinding.wdkAccountIndex,
+      walletHistory: room.walletHistory.slice(0, -1),
+      notes: `${room.notes}\nRolled back wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+
+    if (!restoredRoom) {
+      throw new Error("wallet_rollback_failed");
+    }
+
+    await reply(
+      context,
+      [
+        `Treasury wallet rolled back for ${restoredRoom.name}.`,
+        `WDK signer: ${restoredRoom.wdkKeyAlias} #${restoredRoom.wdkAccountIndex}`,
+        `Wallet: ${restoredRoom.walletAddress}`,
+        `${restoredRoom.assetSymbol} balance: ${restoredRoom.balance}`,
+        `Native gas: ${restoredRoom.gasReserve}`,
+      ].join("\n"),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not roll back the treasury wallet.";
+    await reply(context, `Wallet rollback failed.\n${message}`);
   }
 }
 
@@ -911,6 +984,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
 
   if (command.kind === "rotate-wallet") {
     await handleRotateWallet(context, room);
+    return { handled: true };
+  }
+
+  if (command.kind === "rollback-wallet") {
+    await handleRollbackWallet(context, room);
     return { handled: true };
   }
 

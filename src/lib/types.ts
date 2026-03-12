@@ -111,6 +111,15 @@ export type TreasuryAllowedRecipient = {
   label: string;
 };
 
+export type TreasuryWalletBindingSnapshot = {
+  walletAddress: string;
+  wdkKeyAlias: string;
+  wdkAccountIndex: number;
+  balance: string;
+  gasReserve: string;
+  recordedAt: string;
+};
+
 export type TreasuryApproval = {
   approverId: string;
   approverName: string;
@@ -166,6 +175,7 @@ export type TreasuryRoom = {
   status: TreasuryRoomStatus;
   approvers: TreasuryApprover[];
   allowedRecipients: TreasuryAllowedRecipient[];
+  walletHistory: TreasuryWalletBindingSnapshot[];
   notes: string;
   requests: TreasurySpendRequest[];
   createdAt: string;

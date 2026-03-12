@@ -80,6 +80,7 @@ ClawTreasury now supports a Telegram-first treasury flow:
 - `history`
 - `allowlist`
 - `rotate wallet`
+- `rollback wallet`
 - `set approvers @alice @bob`
 - `set quorum 2`
 - `set daily limit 250`
@@ -129,6 +130,7 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - Treasury policy can now be updated in chat with `set approvers`, `set quorum`, `set daily limit`, and recipient allowlist commands
 - Recipient allowlists are enforced on both Telegram-created requests and dashboard-created requests
 - Existing Telegram treasury rooms can rotate to a fresh derived WDK account index with `rotate wallet`
+- Telegram treasury rooms can revert the last wallet rotation with `rollback wallet`
 - When quorum is met, Claw executes through WDK and posts the tx hash back into the same thread
 - WhatsApp is still modeled in the data layer but not yet wired as a live transport
 
