@@ -24,6 +24,7 @@ import {
   loadTreasuryRoomBySessionKey,
   recordTreasuryApproval,
   recordTreasuryExecution,
+  suggestTreasuryWdkAccountIndex,
   updateTreasuryRoomControl,
 } from "@/lib/treasury";
 import type { TreasuryApprover, TreasuryRoom, TreasurySpendRequest } from "@/lib/types";
@@ -225,6 +226,7 @@ function summarizeRoom(room: TreasuryRoom, live: { walletAddress: string; balanc
     `Native gas: ${live?.gasReserve || room.gasReserve}`,
     `Quorum: ${room.quorum}/${room.approvers.length}`,
     `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
+    `WDK signer: ${room.wdkKeyAlias} #${room.wdkAccountIndex}`,
     `Approvers: ${approvers}`,
     summarizeAllowlist(room),
     `Queue: ${pending} pending, ${approved} approved, ${executed} executed`,
@@ -237,6 +239,7 @@ function summarizePolicy(room: TreasuryRoom): string {
     `Quorum: ${room.quorum}/${room.approvers.length}`,
     `Approvers: ${room.approvers.map((entry) => entry.handle).join(", ")}`,
     `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
+    `WDK signer: ${room.wdkKeyAlias} #${room.wdkAccountIndex}`,
     summarizeAllowlist(room),
     `Mode: ${room.agentMode}`,
   ].join("\n");
@@ -353,7 +356,8 @@ async function handleCreateTreasury(context: TelegramContext, existingRoom: Trea
 
   const defaults = resolveTelegramDefaultTreasuryConfig();
   try {
-    const aliasSnapshot = await inspectWdkAlias(defaults.wdkKeyAlias);
+    const accountIndex = await suggestTreasuryWdkAccountIndex(defaults.wdkKeyAlias, context.sessionKey);
+    const aliasSnapshot = await inspectWdkAlias(defaults.wdkKeyAlias, accountIndex);
     const room = await createTreasuryRoom({
       name: buildTelegramRoomName(context.message),
       channel: resolveTelegramChannel(context.message),
@@ -369,6 +373,7 @@ async function handleCreateTreasury(context: TelegramContext, existingRoom: Trea
       quorum: Math.min(defaults.quorum, approvers.length),
       dailyLimit: defaults.dailyLimit,
       wdkKeyAlias: defaults.wdkKeyAlias,
+      wdkAccountIndex: accountIndex,
       agentMode: defaults.agentMode,
       notes: `Provisioned from Telegram by ${formatTelegramActor(context.message)}.`,
       approvers,

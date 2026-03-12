@@ -38,6 +38,7 @@ type CreateRoomInput = {
   quorum: number;
   dailyLimit: string;
   wdkKeyAlias?: string;
+  wdkAccountIndex?: number;
   agentMode?: TreasuryAgentMode;
   notes: string;
   status?: TreasuryRoomStatus;
@@ -84,6 +85,7 @@ type UpdateRoomControlInput = {
   dailyLimit?: string;
   gasReserve?: string;
   wdkKeyAlias?: string;
+  wdkAccountIndex?: number;
   agentMode?: TreasuryAgentMode;
   quorum?: number;
   approvers?: TreasuryApprover[];
@@ -125,6 +127,14 @@ function numeric(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function normalizeAccountIndex(value: number | undefined): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(Number(value)));
+}
+
 function defaultGasReserve(room: Pick<TreasuryRoom, "quorum" | "requests" | "dailyLimit">): string {
   const queuedValue = room.requests.reduce((sum, request) => {
     if (request.status === "approved" || request.status === "pending-approvals") {
@@ -154,6 +164,7 @@ function normalizeRoom(room: TreasuryRoom): TreasuryRoom {
     ...room,
     gasReserve: room.gasReserve?.trim() || defaultGasReserve(room),
     wdkKeyAlias: room.wdkKeyAlias?.trim() || defaultKeyAlias(room),
+    wdkAccountIndex: normalizeAccountIndex(room.wdkAccountIndex),
     agentMode: isTreasuryAgentMode(room.agentMode) ? room.agentMode : "execute-after-quorum",
     allowedRecipients: normalizeAllowedRecipients(room.allowedRecipients ?? []),
     requests: sortRequests(room.requests.map(normalizeRequest)),
@@ -302,6 +313,7 @@ export async function createTreasuryRoom(input: CreateRoomInput): Promise<Treasu
     quorum: input.quorum,
     dailyLimit: input.dailyLimit,
     wdkKeyAlias: input.wdkKeyAlias ?? "",
+    wdkAccountIndex: normalizeAccountIndex(input.wdkAccountIndex),
     agentMode: input.agentMode ?? "execute-after-quorum",
     status: input.status ?? "active",
     approvers: input.approvers,
@@ -371,6 +383,27 @@ export async function createTreasuryRequest(input: CreateRequestInput): Promise<
 
   await saveTreasuryStore(store);
   return request;
+}
+
+export async function suggestTreasuryWdkAccountIndex(alias: string, sessionKey: string): Promise<number> {
+  const normalizedAlias = alias.trim();
+  if (!normalizedAlias) {
+    return 0;
+  }
+
+  const store = await loadTreasuryStore();
+  const existing = store.rooms.find(
+    (entry) => entry.wdkKeyAlias === normalizedAlias && entry.sessionKey.trim() === sessionKey.trim(),
+  );
+  if (existing) {
+    return normalizeAccountIndex(existing.wdkAccountIndex);
+  }
+
+  const usedIndexes = store.rooms
+    .filter((entry) => entry.wdkKeyAlias === normalizedAlias)
+    .map((entry) => normalizeAccountIndex(entry.wdkAccountIndex));
+
+  return usedIndexes.length === 0 ? 0 : Math.max(...usedIndexes) + 1;
 }
 
 export async function recordTreasuryApproval(input: RecordApprovalInput): Promise<TreasurySpendRequest | null> {
@@ -513,6 +546,7 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
     dailyLimit: input.dailyLimit?.trim() || room.dailyLimit,
     gasReserve: input.gasReserve?.trim() || room.gasReserve,
     wdkKeyAlias: input.wdkKeyAlias?.trim() || room.wdkKeyAlias,
+    wdkAccountIndex: input.wdkAccountIndex !== undefined ? normalizeAccountIndex(input.wdkAccountIndex) : room.wdkAccountIndex,
     agentMode: input.agentMode ?? room.agentMode,
     quorum: nextQuorum,
     approvers: nextApprovers,

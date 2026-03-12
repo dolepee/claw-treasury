@@ -1215,6 +1215,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                       <span className="ct-chip">{selectedRoom.network}</span>
                       <span className="ct-chip">{selectedRoom.assetSymbol}</span>
                       <span className="ct-chip">{selectedRoom.wdkKeyAlias}</span>
+                      <span className="ct-chip">acct #{selectedRoom.wdkAccountIndex}</span>
                     </div>
                     <p className="max-w-2xl text-sm leading-7 text-zinc-400">
                       Bound to <span className="font-mono text-zinc-200">{selectedRoom.sessionKey}</span> with route command{" "}
@@ -1270,6 +1271,10 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                         <span className="font-mono text-zinc-100">{selectedRoom.wdkKeyAlias}</span>
                       </div>
                       <div className="flex items-center justify-between gap-3 text-sm text-zinc-300">
+                        <span>Derived account</span>
+                        <span className="font-mono text-zinc-100">#{selectedRoom.wdkAccountIndex}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 text-sm text-zinc-300">
                         <span>Route command</span>
                         <span className="font-mono text-zinc-100">{selectedRoom.routeCommand}</span>
                       </div>
@@ -1301,7 +1306,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                     <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">Modular key rack</p>
                     <div className="mt-4 space-y-3">
                       {[
-                        { label: "WDK signer", value: selectedRoom.wdkKeyAlias, status: "armed" },
+                        { label: "WDK signer", value: `${selectedRoom.wdkKeyAlias} #${selectedRoom.wdkAccountIndex}`, status: "armed" },
                         { label: "Session route", value: shortAddress(selectedRoom.walletAddress), status: "bound" },
                         { label: "Recovery posture", value: `${selectedRoom.quorum}-of-${selectedRoom.approvers.length}`, status: "quorum" },
                       ].map((module) => (
@@ -1430,6 +1435,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                             <p className="mt-1 text-xs text-zinc-500">{room.channelLabel}</p>
                           </div>
                           <span className="ct-chip !text-[0.62rem]">{room.wdkKeyAlias}</span>
+                          <span className="ct-chip !text-[0.62rem]">#{room.wdkAccountIndex}</span>
                         </div>
                         <div className="mt-3 flex items-center justify-between">
                           <span className="text-xs uppercase tracking-[0.24em] text-zinc-500">Live reserve</span>
@@ -2040,6 +2046,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                     </div>
                     <div className="mt-4 flex flex-wrap gap-2">
                       <span className="ct-chip !text-[0.62rem]">{room.wdkKeyAlias}</span>
+                      <span className="ct-chip !text-[0.62rem]">#{room.wdkAccountIndex}</span>
                       <span className="ct-chip !text-[0.62rem]">{agentModeLabel(room.agentMode)}</span>
                     </div>
                   </button>

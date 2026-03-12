@@ -161,6 +161,7 @@ export type TreasuryRoom = {
   quorum: number;
   dailyLimit: string;
   wdkKeyAlias: string;
+  wdkAccountIndex: number;
   agentMode: TreasuryAgentMode;
   status: TreasuryRoomStatus;
   approvers: TreasuryApprover[];

@@ -83,6 +83,18 @@ function getBinding(alias: string): WdkWalletBinding | null {
   return parseBindings()[alias] ?? null;
 }
 
+function resolveAccountIndex(room: Pick<TreasuryRoom, "wdkAccountIndex"> | null, binding: WdkWalletBinding, accountIndexOverride?: number): number {
+  if (Number.isFinite(accountIndexOverride)) {
+    return Math.max(0, Math.floor(Number(accountIndexOverride)));
+  }
+
+  if (room && Number.isFinite(room.wdkAccountIndex)) {
+    return Math.max(0, Math.floor(Number(room.wdkAccountIndex)));
+  }
+
+  return binding.accountIndex ?? 0;
+}
+
 export function getConfiguredTreasuryOperatorKey(): string | null {
   return process.env.CLAW_TREASURY_OPERATOR_KEY?.trim() || null;
 }
@@ -155,7 +167,7 @@ export function isRoomWdkExecutable(room: TreasuryRoom, runtime: TreasuryWdkRunt
   );
 }
 
-export async function inspectWdkAlias(alias: string): Promise<WdkAliasSnapshot> {
+export async function inspectWdkAlias(alias: string, accountIndexOverride?: number): Promise<WdkAliasSnapshot> {
   const binding = getBinding(alias);
   if (!binding) {
     throw new Error("wdk_wallet_binding_missing");
@@ -166,7 +178,7 @@ export async function inspectWdkAlias(alias: string): Promise<WdkAliasSnapshot> 
     provider: binding.provider,
     transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
   });
-  const account = await wallet.getAccount(binding.accountIndex ?? 0);
+  const account = await wallet.getAccount(resolveAccountIndex(null, binding, accountIndexOverride));
 
   try {
     const walletAddress = await account.getAddress();
@@ -200,7 +212,7 @@ export async function inspectTreasuryRoomWithWdk(room: TreasuryRoom): Promise<Wd
     provider: binding.provider,
     transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
   });
-  const account = await wallet.getAccount(binding.accountIndex ?? 0);
+  const account = await wallet.getAccount(resolveAccountIndex(room, binding));
 
   try {
     const walletAddress = await account.getAddress();
@@ -253,7 +265,7 @@ export async function executeTreasuryRequestWithWdk(input: ExecuteWithWdkInput):
     transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
   });
 
-  const account = await wallet.getAccount(binding.accountIndex ?? 0);
+  const account = await wallet.getAccount(resolveAccountIndex(input.room, binding));
   try {
     const walletAddress = await account.getAddress();
     if (!isRuntimePlaceholder(input.room.walletAddress) && input.room.walletAddress.toLowerCase() !== walletAddress.toLowerCase()) {

@@ -16,6 +16,7 @@ Standalone ClawTreasury app for the Tether WDK hackathon.
   - execute approved payouts through WDK on Plasma
   - attach manual receipts only as a fallback
 - Telegram topics can now act as the primary treasury surface through the webhook bridge at `/api/telegram/webhook`
+- New Telegram treasury rooms provision a unique derived WDK account index under the configured Plasma signer instead of reusing one shared account
 
 ## Stack
 - Next.js (App Router) + TypeScript
@@ -121,6 +122,7 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 
 ### Current scope
 - Telegram topic or DM can create or use a treasury room bound to its chat context
+- Each newly created Telegram treasury room binds to its own derived WDK account index under the configured default alias
 - Spend requests are created in chat and echoed back with a short ref
 - Approvers are matched from Telegram usernames against configured approver handles
 - Treasury policy can now be updated in chat with `set approvers`, `set quorum`, `set daily limit`, and recipient allowlist commands

@@ -18,6 +18,7 @@ type Body = {
   quorum?: number;
   dailyLimit?: string;
   wdkKeyAlias?: string;
+  wdkAccountIndex?: number;
   agentMode?: TreasuryAgentMode;
   notes?: string;
   status?: TreasuryRoomStatus;
@@ -73,6 +74,7 @@ export async function POST(request: NextRequest) {
       quorum,
       dailyLimit: body.dailyLimit?.trim() || "0.00",
       wdkKeyAlias: body.wdkKeyAlias?.trim() || "",
+      wdkAccountIndex: Number.isFinite(body.wdkAccountIndex) ? Number(body.wdkAccountIndex) : undefined,
       agentMode: isTreasuryAgentMode(body.agentMode) ? body.agentMode : "execute-after-quorum",
       notes: body.notes?.trim() || "",
       status: isTreasuryStatus(body.status) ? body.status : "active",
@@ -122,6 +124,7 @@ export async function PATCH(request: NextRequest) {
       dailyLimit: body.dailyLimit,
       gasReserve: body.gasReserve,
       wdkKeyAlias: body.wdkKeyAlias,
+      wdkAccountIndex: body.wdkAccountIndex,
       agentMode: body.agentMode,
       quorum: body.quorum,
       approvers: body.approvers,
