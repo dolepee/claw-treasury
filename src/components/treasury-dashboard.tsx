@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useEffect, useEffectEvent, useMemo, useState, useTransition } from "react";
+import { buildTreasuryAnalytics } from "@/lib/treasury-analytics";
 import {
   TreasuryAgentMode,
   TreasuryAllowedRecipient,
@@ -174,6 +175,10 @@ function formatGasReserve(value: string | number): string {
   return `${parsed.toFixed(parsed >= 1 ? 2 : 4)} native`;
 }
 
+function formatPercent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
 function formatClock(value: string | Date): string {
   return new Date(value).toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -189,6 +194,40 @@ function formatStamp(value: string | Date): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatDurationMinutes(value: number | null): string {
+  if (value === null) return "n/a";
+  if (value < 1) return `${Math.round(value * 60)} sec`;
+  if (value < 60) return `${value.toFixed(1)} min`;
+  return `${(value / 60).toFixed(1)} hr`;
+}
+
+function formatCompactWei(value: string): string {
+  try {
+    const amount = BigInt(value);
+    if (amount === BigInt(0)) {
+      return "0 wei";
+    }
+    const absolute = amount < BigInt(0) ? -amount : amount;
+    const units = [
+      { threshold: BigInt("1000000000000"), suffix: "T wei" },
+      { threshold: BigInt("1000000000"), suffix: "B wei" },
+      { threshold: BigInt("1000000"), suffix: "M wei" },
+      { threshold: BigInt("1000"), suffix: "K wei" },
+    ];
+
+    for (const unit of units) {
+      if (absolute >= unit.threshold) {
+        const scaled = Number(absolute) / Number(unit.threshold);
+        return `${amount < BigInt(0) ? "-" : ""}${scaled.toFixed(scaled >= 100 ? 0 : 1)} ${unit.suffix}`;
+      }
+    }
+
+    return `${amount.toString()} wei`;
+  } catch {
+    return `${value} wei`;
+  }
 }
 
 function shortAddress(value: string): string {
@@ -558,6 +597,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
   const activeWalletActionCount =
     selectedRoom?.requests.filter((request) => request.status === "pending-approvals" || request.status === "approved").length ?? 0;
   const walletActionBlocked = activeWalletActionCount > 0;
+  const selectedRoomAnalytics = selectedRoom ? buildTreasuryAnalytics(selectedRoom) : null;
 
   const totalBalance = rooms.reduce((sum, room) => sum + numeric(room.balance), 0);
   const totalPending = rooms.reduce(
@@ -1112,7 +1152,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
     });
   }
 
-  function exportAudit(format: "json" | "csv") {
+  function exportAudit(format: "json" | "csv" | "md") {
     if (!selectedRoom) return;
     const url = `/api/treasury/export?roomId=${encodeURIComponent(selectedRoom.id)}&format=${format}`;
     window.open(url, "_blank", "noopener,noreferrer");
@@ -1298,6 +1338,9 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             </div>
 
             <div className="flex flex-wrap gap-3">
+              <button type="button" className="ct-button-ghost" disabled={!selectedRoom} onClick={() => exportAudit("md")}>
+                Export Brief
+              </button>
               <button type="button" className="ct-button-ghost" disabled={!selectedRoom} onClick={() => exportAudit("json")}>
                 Export JSON
               </button>
@@ -1479,6 +1522,174 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             </div>
           )}
         </div>
+      </motion.section>
+
+      <motion.section {...revealMotion} id="analytics" className="ct-panel px-6 py-6 sm:px-7">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-2">
+            <div className="ct-label">Treasury Analytics</div>
+            <h3 className="text-2xl font-semibold tracking-[-0.03em] text-white">Approval velocity, execution drag, and signer churn in one operator layer.</h3>
+            <p className="max-w-3xl text-sm leading-7 text-zinc-400">
+              These metrics are computed from the live room state, so the same data feeding Claw’s reasoning stream also drives the operator audit brief.
+            </p>
+          </div>
+          {selectedRoomAnalytics ? (
+            <div className="flex flex-wrap gap-2">
+              <span className="ct-chip">{selectedRoomAnalytics.requestCount} requests tracked</span>
+              <span className="ct-chip">{selectedRoomAnalytics.activeApproverCount} active approver{selectedRoomAnalytics.activeApproverCount === 1 ? "" : "s"}</span>
+              <span className="ct-chip">{selectedRoomAnalytics.walletRotationCount} wallet rotation{selectedRoomAnalytics.walletRotationCount === 1 ? "" : "s"}</span>
+            </div>
+          ) : null}
+        </div>
+
+        {selectedRoom && selectedRoomAnalytics ? (
+          <div className="mt-6 space-y-5">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  label: "Quorum throughput",
+                  value: formatPercent(selectedRoomAnalytics.quorumClearRate),
+                  detail: `${selectedRoomAnalytics.approved + selectedRoomAnalytics.executed}/${Math.max(selectedRoomAnalytics.requestCount, 1)} requests reached quorum`,
+                },
+                {
+                  label: "Execution velocity",
+                  value: formatDurationMinutes(selectedRoomAnalytics.avgExecutionLagMinutes),
+                  detail: selectedRoomAnalytics.executed > 0 ? `${selectedRoomAnalytics.executed} request${selectedRoomAnalytics.executed === 1 ? "" : "s"} settled on-chain` : "Waiting for the first on-chain receipt",
+                },
+                {
+                  label: "Approval lag",
+                  value: formatDurationMinutes(selectedRoomAnalytics.avgApprovalLagMinutes),
+                  detail: selectedRoomAnalytics.pendingApprovals > 0 ? `${selectedRoomAnalytics.pendingApprovals} request${selectedRoomAnalytics.pendingApprovals === 1 ? "" : "s"} still in review` : "No quorum backlog right now",
+                },
+                {
+                  label: "Fee tracked",
+                  value: formatCompactWei(selectedRoomAnalytics.totalFeeWei),
+                  detail: `Quoted ${formatCompactWei(selectedRoomAnalytics.totalQuotedFeeWei)} across executed WDK receipts`,
+                },
+              ].map((metric, index) => (
+                <motion.article
+                  key={metric.label}
+                  className="rounded-[22px] border border-white/10 bg-white/[0.04] p-4"
+                  initial={{ opacity: 0, y: 18 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true, amount: 0.2 }}
+                  transition={{ duration: 0.45, delay: index * 0.05, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <div className="ct-label">{metric.label}</div>
+                  <p className="mt-3 font-mono text-2xl text-white">{metric.value}</p>
+                  <p className="mt-3 text-sm leading-6 text-zinc-500">{metric.detail}</p>
+                </motion.article>
+              ))}
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+              <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="ct-label">Policy performance</div>
+                    <p className="mt-2 text-sm leading-7 text-zinc-400">
+                      Coverage tracks how much of the live recipient set is already protected by the room’s allowlist. Wallet churn reflects operational signer changes.
+                    </p>
+                  </div>
+                  <span className="ct-chip">{selectedRoom.name}</span>
+                </div>
+
+                <div className="mt-5 space-y-4">
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-sm text-zinc-300">
+                      <span>Execution rate</span>
+                      <span className="font-mono text-zinc-100">{formatPercent(selectedRoomAnalytics.executionRate)}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-white/5">
+                      <motion.div
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-teal-300 to-cyan-300"
+                        initial={{ width: 0 }}
+                        whileInView={{ width: `${selectedRoomAnalytics.executionRate}%` }}
+                        viewport={{ once: true, amount: 0.5 }}
+                        transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-sm text-zinc-300">
+                      <span>Recipient coverage</span>
+                      <span className="font-mono text-zinc-100">{formatPercent(selectedRoomAnalytics.recipientCoverageRate)}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-white/5">
+                      <motion.div
+                        className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-300 to-indigo-300"
+                        initial={{ width: 0 }}
+                        whileInView={{ width: `${selectedRoomAnalytics.recipientCoverageRate}%` }}
+                        viewport={{ once: true, amount: 0.5 }}
+                        transition={{ duration: 0.8, delay: 0.06, ease: [0.22, 1, 0.36, 1] }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-[20px] border border-white/10 bg-white/[0.04] p-4">
+                      <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">Requested volume</p>
+                      <p className="mt-2 font-mono text-lg text-white">{formatToken(selectedRoomAnalytics.totalRequestedVolume, selectedRoom.assetSymbol)}</p>
+                      <p className="mt-2 text-xs text-zinc-500">Average size {formatToken(selectedRoomAnalytics.avgRequestAmount, selectedRoom.assetSymbol)}</p>
+                    </div>
+                    <div className="rounded-[20px] border border-white/10 bg-white/[0.04] p-4">
+                      <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">Wallet churn</p>
+                      <p className="mt-2 font-mono text-lg text-white">{selectedRoomAnalytics.walletRotationCount}</p>
+                      <p className="mt-2 text-xs text-zinc-500">{selectedRoomAnalytics.uniqueRecipientCount} unique recipient{selectedRoomAnalytics.uniqueRecipientCount === 1 ? "" : "s"} touched</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-5">
+                <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
+                  <div className="ct-label">Approver participation</div>
+                  {selectedRoomAnalytics.topApprovers.length === 0 ? (
+                    <p className="mt-4 text-sm leading-7 text-zinc-500">No approval activity yet. The first treasury request will start the participation board.</p>
+                  ) : (
+                    <ul className="mt-4 space-y-3">
+                      {selectedRoomAnalytics.topApprovers.slice(0, 4).map((entry) => (
+                        <li key={entry.approverId} className="rounded-[20px] border border-white/10 bg-white/[0.04] px-4 py-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="font-medium text-white">{entry.approverName}</p>
+                              <p className="mt-1 text-xs text-zinc-500">{entry.handle}</p>
+                            </div>
+                            <span className="font-mono text-sm text-zinc-100">{entry.totalCount}</span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-3 text-xs text-zinc-400">
+                            <span>{entry.approvedCount} approved</span>
+                            <span>{entry.rejectedCount} rejected</span>
+                            <span>{entry.lastActionAt ? `Last action ${formatStamp(entry.lastActionAt)}` : "No actions yet"}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="rounded-[24px] border border-white/10 bg-black/30 p-5">
+                  <div className="ct-label">Latest operator pulse</div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-[20px] border border-white/10 bg-white/[0.04] p-4">
+                      <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">Last execution</p>
+                      <p className="mt-2 font-mono text-sm text-white">{selectedRoomAnalytics.lastExecutedAt ? formatStamp(selectedRoomAnalytics.lastExecutedAt) : "n/a"}</p>
+                    </div>
+                    <div className="rounded-[20px] border border-white/10 bg-white/[0.04] p-4">
+                      <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">Latest request</p>
+                      <p className="mt-2 font-mono text-sm text-white">{selectedRoomAnalytics.latestRequestAt ? formatStamp(selectedRoomAnalytics.latestRequestAt) : "n/a"}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-6 rounded-[24px] border border-dashed border-white/10 bg-black/20 px-6 py-8 text-center text-zinc-400">
+            Provision the first treasury room to activate live approval and execution analytics.
+          </div>
+        )}
       </motion.section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_420px]">

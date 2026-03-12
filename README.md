@@ -15,8 +15,9 @@ Standalone ClawTreasury app for the Tether WDK hackathon.
   - record quorum approvals or rejections
   - execute approved payouts through WDK on Plasma
   - attach manual receipts only as a fallback
-  - export a room audit trail as JSON or CSV
+  - export a room audit trail as JSON, CSV, or a markdown operator brief
   - rotate, roll back, or rebind treasury wallets directly from the dashboard
+  - inspect approval velocity, execution lag, fee totals, and approver participation in the dashboard
 - Telegram topics can now act as the primary treasury surface through the webhook bridge at `/api/telegram/webhook`
 - New Telegram treasury rooms provision a unique derived WDK account index under the configured Plasma signer instead of reusing one shared account
 
@@ -162,5 +163,6 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - `POST /api/treasury/approvals`
 - `POST /api/treasury/execution`
 - `GET /api/treasury/export?roomId=<id>&format=json|csv`
+- `GET /api/treasury/export?roomId=<id>&format=md`
 - `POST /api/treasury/wallet-actions`
 - `POST /api/treasury/execution/wdk`
