@@ -1,16 +1,18 @@
 import {
+  answerTelegramCallbackQuery,
   buildTelegramChannelLabel,
   buildTelegramRoomName,
   buildTelegramSessionKey,
-  formatTelegramActor,
   loadTelegramRuntime,
   matchTelegramApprover,
   parseTelegramDefaultApprovers,
   resolveTelegramChannel,
   resolveTelegramDefaultTreasuryConfig,
   sendTelegramMessage,
+  TelegramInlineButton,
   TelegramMessage,
   TelegramUpdate,
+  TelegramUser,
 } from "@/lib/telegram";
 import {
   findTelegramMessageLink,
@@ -60,12 +62,34 @@ type TelegramContext = {
   chatId: string;
   threadId?: number;
   sessionKey: string;
+  actor?: TelegramUser;
+  callbackQueryId?: string;
 };
 
 const EVM_ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 
+type ParsedCallbackAction = {
+  decision: "approve" | "reject";
+};
+
 function extractMessage(update: TelegramUpdate): TelegramMessage | null {
   return update.message ?? null;
+}
+
+function extractCallbackAction(update: TelegramUpdate): ParsedCallbackAction | null {
+  const data = update.callback_query?.data?.trim().toLowerCase();
+  if (!data) {
+    return null;
+  }
+
+  if (data === "treasury:approve") {
+    return { decision: "approve" };
+  }
+  if (data === "treasury:reject") {
+    return { decision: "reject" };
+  }
+
+  return null;
 }
 
 function requestReference(request: TreasurySpendRequest): string {
@@ -328,12 +352,15 @@ function summarizeRequest(request: TreasurySpendRequest, room: TreasuryRoom): st
     `Memo: ${request.memo}`,
     `Requested by: ${request.requestedBy}`,
     `Policy: ${room.quorum}/${room.approvers.length} quorum, limit ${room.dailyLimit} ${room.assetSymbol}`,
-    "Approvers: reply 'approve' or 'reject <reason>' to this message.",
+    "Approvers: tap Approve / Reject below, or reply 'approve' or 'reject <reason>' to this message.",
   ].join("\n");
 }
 
 function summarizeApproval(request: TreasurySpendRequest, room: TreasuryRoom): string {
   const approvals = request.approvals.filter((entry) => entry.decision === "approved").length;
+  if (request.status === "executed") {
+    return `Request [${requestReference(request)}] has already been executed and anchored onchain.`;
+  }
   if (request.status === "rejected") {
     return `Request [${requestReference(request)}] was rejected. Claw will not execute this payout.`;
   }
@@ -344,12 +371,66 @@ function summarizeApproval(request: TreasurySpendRequest, room: TreasuryRoom): s
   return `Approval recorded for [${requestReference(request)}]. Progress: ${approvals}/${room.quorum}.`;
 }
 
-async function reply(context: TelegramContext, text: string, replyToMessageId?: number): Promise<{ messageId: number }> {
+function contextActor(context: TelegramContext): TelegramUser | undefined {
+  return context.actor ?? context.message.from;
+}
+
+function formatContextActor(context: TelegramContext): string {
+  const actor = contextActor(context);
+  if (!actor) {
+    return "Unknown operator";
+  }
+
+  if (actor.username?.trim()) {
+    return `@${actor.username.trim()}`;
+  }
+
+  return [actor.first_name, actor.last_name].filter(Boolean).join(" ").trim() || `user-${actor.id}`;
+}
+
+function matchContextApprover(approvers: TreasuryApprover[], context: TelegramContext): TreasuryApprover | null {
+  const actor = contextActor(context);
+  if (!actor) {
+    return null;
+  }
+
+  return matchTelegramApprover(approvers, {
+    ...context.message,
+    from: actor,
+  });
+}
+
+function requestActionButtons(): TelegramInlineButton[][] {
+  return [[
+    { text: "Approve", callbackData: "treasury:approve" },
+    { text: "Reject", callbackData: "treasury:reject" },
+  ]];
+}
+
+async function answerCallback(context: TelegramContext, text: string, showAlert = false): Promise<void> {
+  if (!context.callbackQueryId) {
+    return;
+  }
+
+  await answerTelegramCallbackQuery({
+    callbackQueryId: context.callbackQueryId,
+    text,
+    showAlert,
+  });
+}
+
+async function reply(
+  context: TelegramContext,
+  text: string,
+  replyToMessageId?: number,
+  inlineButtons?: TelegramInlineButton[][],
+): Promise<{ messageId: number }> {
   return sendTelegramMessage({
     chatId: context.chatId,
     threadId: context.threadId,
     text,
     replyToMessageId: replyToMessageId ?? context.message.message_id,
+    inlineButtons,
   });
 }
 
@@ -405,7 +486,7 @@ async function handleCreateTreasury(context: TelegramContext, existingRoom: Trea
       wdkKeyAlias: defaults.wdkKeyAlias,
       wdkAccountIndex: accountIndex,
       agentMode: defaults.agentMode,
-      notes: `Provisioned from Telegram by ${formatTelegramActor(context.message)}.`,
+      notes: `Provisioned from Telegram by ${formatContextActor(context)}.`,
       approvers,
     });
 
@@ -500,7 +581,7 @@ async function handleRotateWallet(
         gasReserve: "0",
         wdkAccountIndex: nextAccountIndex,
         walletHistory: [...room.walletHistory, historyEntry],
-        notes: `${room.notes}\nRotated wallet with sweep from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+        notes: `${room.notes}\nRotated wallet with sweep from Telegram by ${formatContextActor(context)}.`.trim(),
       });
 
       if (!updatedRoom) {
@@ -531,7 +612,7 @@ async function handleRotateWallet(
       gasReserve: nextSnapshot.gasReserve,
       wdkAccountIndex: nextAccountIndex,
       walletHistory: [...room.walletHistory, historyEntry],
-      notes: `${room.notes}\nRotated wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nRotated wallet from Telegram by ${formatContextActor(context)}.`.trim(),
     });
 
     if (!updatedRoom) {
@@ -587,7 +668,7 @@ async function handleRollbackWallet(context: TelegramContext, room: TreasuryRoom
       wdkKeyAlias: previousBinding.wdkKeyAlias,
       wdkAccountIndex: previousBinding.wdkAccountIndex,
       walletHistory: room.walletHistory.slice(0, -1),
-      notes: `${room.notes}\nRolled back wallet from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nRolled back wallet from Telegram by ${formatContextActor(context)}.`.trim(),
     });
 
     if (!restoredRoom) {
@@ -660,7 +741,7 @@ async function handleSetWalletIndex(
         gasReserve: "0",
         wdkAccountIndex: input.accountIndex,
         walletHistory: [...room.walletHistory, historyEntry],
-        notes: `${room.notes}\nRebound wallet index from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+        notes: `${room.notes}\nRebound wallet index from Telegram by ${formatContextActor(context)}.`.trim(),
       });
 
       if (!updatedRoom) {
@@ -690,7 +771,7 @@ async function handleSetWalletIndex(
       gasReserve: targetSnapshot.gasReserve,
       wdkAccountIndex: input.accountIndex,
       walletHistory: [...room.walletHistory, historyEntry],
-      notes: `${room.notes}\nSet wallet index from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nSet wallet index from Telegram by ${formatContextActor(context)}.`.trim(),
     });
 
     if (!updatedRoom) {
@@ -718,7 +799,7 @@ function requirePolicyActor(room: TreasuryRoom | null, context: TelegramContext)
     return null;
   }
 
-  return matchTelegramApprover(room.approvers, context.message);
+  return matchContextApprover(room.approvers, context);
 }
 
 async function handleSetApprovers(
@@ -752,7 +833,7 @@ async function handleSetApprovers(
       roomId: room.id,
       approvers: nextApprovers,
       quorum: Math.min(room.quorum, nextApprovers.length),
-      notes: `${room.notes}\nUpdated approvers from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nUpdated approvers from Telegram by ${formatContextActor(context)}.`.trim(),
     });
     if (!updatedRoom) {
       throw new Error("policy_update_failed");
@@ -785,7 +866,7 @@ async function handleSetQuorum(
     const updatedRoom = await updateTreasuryRoomControl({
       roomId: room.id,
       quorum: input.quorum,
-      notes: `${room.notes}\nUpdated quorum from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nUpdated quorum from Telegram by ${formatContextActor(context)}.`.trim(),
     });
     if (!updatedRoom) {
       throw new Error("policy_update_failed");
@@ -818,7 +899,7 @@ async function handleSetDailyLimit(
     const updatedRoom = await updateTreasuryRoomControl({
       roomId: room.id,
       dailyLimit: input.dailyLimit,
-      notes: `${room.notes}\nUpdated daily limit from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nUpdated daily limit from Telegram by ${formatContextActor(context)}.`.trim(),
     });
     if (!updatedRoom) {
       throw new Error("policy_update_failed");
@@ -859,7 +940,7 @@ async function handleAllowRecipient(
     const updatedRoom = await updateTreasuryRoomControl({
       roomId: room.id,
       allowedRecipients: nextAllowedRecipients,
-      notes: `${room.notes}\nUpdated allowlist from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nUpdated allowlist from Telegram by ${formatContextActor(context)}.`.trim(),
     });
     if (!updatedRoom) {
       throw new Error("policy_update_failed");
@@ -898,7 +979,7 @@ async function handleRemoveRecipient(
     const updatedRoom = await updateTreasuryRoomControl({
       roomId: room.id,
       allowedRecipients: nextAllowedRecipients,
-      notes: `${room.notes}\nRemoved allowlist entry from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+      notes: `${room.notes}\nRemoved allowlist entry from Telegram by ${formatContextActor(context)}.`.trim(),
     });
     if (!updatedRoom) {
       throw new Error("policy_update_failed");
@@ -938,7 +1019,7 @@ async function handlePay(
   try {
     const request = await createTreasuryRequest({
       roomId: room.id,
-      requestedBy: formatTelegramActor(context.message),
+      requestedBy: formatContextActor(context),
       amount: input.amount,
       assetSymbol: room.assetSymbol,
       recipient: input.recipient,
@@ -950,7 +1031,7 @@ async function handlePay(
       return;
     }
 
-    const sent = await reply(context, summarizeRequest(request, room));
+    const sent = await reply(context, summarizeRequest(request, room), undefined, requestActionButtons());
     await rememberTelegramMessageLink({
       chatId: context.chatId,
       messageId: sent.messageId,
@@ -986,6 +1067,15 @@ async function resolveRequestForDecision(
   }
 
   return null;
+}
+
+async function resolveRequestFromActionMessage(context: TelegramContext, room: TreasuryRoom): Promise<TreasurySpendRequest | null> {
+  const link = await findTelegramMessageLink(context.chatId, context.message.message_id);
+  if (!link || link.roomId !== room.id) {
+    return null;
+  }
+
+  return room.requests.find((entry) => entry.id === link.requestId) ?? null;
 }
 
 async function attemptTelegramExecution(context: TelegramContext, room: TreasuryRoom, request: TreasurySpendRequest): Promise<void> {
@@ -1038,6 +1128,54 @@ async function attemptTelegramExecution(context: TelegramContext, room: Treasury
   }
 }
 
+async function applyDecision(
+  context: TelegramContext,
+  room: TreasuryRoom,
+  request: TreasurySpendRequest,
+  approver: TreasuryApprover,
+  decision: "approve" | "reject",
+  note: string,
+): Promise<void> {
+  const updated = await recordTreasuryApproval({
+    roomId: room.id,
+    requestId: request.id,
+    approverId: approver.id,
+    decision: decision === "approve" ? "approved" : "rejected",
+    note,
+  });
+
+  if (!updated) {
+    if (context.callbackQueryId) {
+      await answerCallback(context, `Could not record ${decision}.`, true);
+      return;
+    }
+
+    await reply(context, `Could not record ${decision} for [${requestReference(request)}].`);
+    return;
+  }
+
+  if (context.callbackQueryId) {
+    await answerCallback(
+      context,
+      decision === "approve"
+        ? `Approval recorded for [${requestReference(updated)}]`
+        : `Request [${requestReference(updated)}] rejected`,
+    );
+  }
+
+  await reply(context, summarizeApproval(updated, room), context.message.message_id);
+
+  if (updated.status === "approved" && decision === "approve") {
+    const refreshedRoom = await getRoomForContext(context);
+    if (refreshedRoom) {
+      const refreshedRequest = refreshedRoom.requests.find((entry) => entry.id === updated.id);
+      if (refreshedRequest) {
+        await attemptTelegramExecution(context, refreshedRoom, refreshedRequest);
+      }
+    }
+  }
+}
+
 async function handleDecision(
   context: TelegramContext,
   room: TreasuryRoom | null,
@@ -1048,7 +1186,7 @@ async function handleDecision(
     return;
   }
 
-  const approver = matchTelegramApprover(room.approvers, context.message);
+  const approver = matchContextApprover(room.approvers, context);
   if (!approver) {
     await reply(context, "You are not listed as an approver for this treasury room.");
     return;
@@ -1060,40 +1198,64 @@ async function handleDecision(
     return;
   }
 
-  const updated = await recordTreasuryApproval({
-    roomId: room.id,
-    requestId: request.id,
-    approverId: approver.id,
-    decision: input.kind === "approve" ? "approved" : "rejected",
-    note: input.note,
-  });
+  await applyDecision(context, room, request, approver, input.kind, input.note);
+}
 
-  if (!updated) {
-    await reply(context, `Could not record ${input.kind} for [${requestReference(request)}].`);
+async function handleCallbackDecision(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  action: ParsedCallbackAction,
+): Promise<void> {
+  if (!room) {
+    await answerCallback(context, "No treasury room is bound to this thread yet.", true);
     return;
   }
 
-  await reply(context, summarizeApproval(updated, room));
-
-  if (updated.status === "approved" && input.kind === "approve") {
-    const refreshedRoom = await getRoomForContext(context);
-    if (refreshedRoom) {
-      const refreshedRequest = refreshedRoom.requests.find((entry) => entry.id === updated.id);
-      if (refreshedRequest) {
-        await attemptTelegramExecution(context, refreshedRoom, refreshedRequest);
-      }
-    }
+  const approver = matchContextApprover(room.approvers, context);
+  if (!approver) {
+    await answerCallback(context, "You are not listed as an approver for this treasury room.", true);
+    return;
   }
+
+  const request = await resolveRequestFromActionMessage(context, room);
+  if (!request) {
+    await answerCallback(context, "Could not resolve the request for this button.", true);
+    return;
+  }
+
+  await applyDecision(context, room, request, approver, action.decision, "");
 }
 
 export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ handled: boolean }> {
+  if (await hasProcessedTelegramUpdate(update.update_id)) {
+    return { handled: true };
+  }
+
+  const callbackAction = extractCallbackAction(update);
+  if (callbackAction) {
+    const callbackMessage = update.callback_query?.message;
+    if (!callbackMessage) {
+      return { handled: false };
+    }
+
+    await rememberProcessedTelegramUpdate(update.update_id);
+
+    const context: TelegramContext = {
+      message: callbackMessage,
+      chatId: String(callbackMessage.chat.id),
+      threadId: callbackMessage.message_thread_id,
+      sessionKey: buildTelegramSessionKey(callbackMessage),
+      actor: update.callback_query?.from,
+      callbackQueryId: update.callback_query?.id,
+    };
+    const room = await getRoomForContext(context);
+    await handleCallbackDecision(context, room, callbackAction);
+    return { handled: true };
+  }
+
   const message = extractMessage(update);
   if (!message?.text?.trim()) {
     return { handled: false };
-  }
-
-  if (await hasProcessedTelegramUpdate(update.update_id)) {
-    return { handled: true };
   }
 
   const command = parseTelegramCommand(message.text);

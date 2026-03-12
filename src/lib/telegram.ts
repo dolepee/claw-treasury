@@ -16,6 +16,11 @@ export type TelegramUser = {
   last_name?: string;
 };
 
+export type TelegramInlineButton = {
+  text: string;
+  callbackData: string;
+};
+
 export type TelegramMessage = {
   message_id: number;
   text?: string;
@@ -32,6 +37,12 @@ export type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  callback_query?: {
+    id: string;
+    from: TelegramUser;
+    data?: string;
+    message?: TelegramMessage;
+  };
 };
 
 type SendTelegramMessageInput = {
@@ -39,6 +50,7 @@ type SendTelegramMessageInput = {
   threadId?: number;
   text: string;
   replyToMessageId?: number;
+  inlineButtons?: TelegramInlineButton[][];
 };
 
 export type TelegramRuntime = {
@@ -243,6 +255,15 @@ export async function sendTelegramMessage(input: SendTelegramMessageInput): Prom
       reply_to_message_id: input.replyToMessageId,
       text: input.text,
       disable_web_page_preview: true,
+      reply_markup: input.inlineButtons?.length
+        ? {
+          inline_keyboard: input.inlineButtons.map((row) =>
+            row.map((button) => ({
+              text: button.text,
+              callback_data: button.callbackData,
+            }))),
+        }
+        : undefined,
     }),
     cache: "no-store",
   });
@@ -256,4 +277,34 @@ export async function sendTelegramMessage(input: SendTelegramMessageInput): Prom
   }
 
   return { messageId: body.result.message_id };
+}
+
+export async function answerTelegramCallbackQuery(input: {
+  callbackQueryId: string;
+  text?: string;
+  showAlert?: boolean;
+}): Promise<void> {
+  const token = getBotToken();
+  if (!token) {
+    throw new Error("telegram_bot_token_missing");
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      callback_query_id: input.callbackQueryId,
+      text: input.text,
+      show_alert: input.showAlert ?? false,
+    }),
+    cache: "no-store",
+  });
+
+  const body = (await response.json().catch(() => null)) as
+    | { ok?: boolean; description?: string }
+    | null;
+
+  if (!response.ok || !body?.ok) {
+    throw new Error(body?.description || "telegram_callback_answer_failed");
+  }
 }

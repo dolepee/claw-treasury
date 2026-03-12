@@ -92,6 +92,7 @@ ClawTreasury now supports a Telegram-first treasury flow:
 - `pay 20 USDT to 0x... for design review`
 - `approve <ref>` or reply `approve` to the request message
 - `reject <ref>` or reply `reject reason` to the request message
+- request messages also expose inline `Approve` and `Reject` buttons in Telegram
 
 ### Required Telegram env
 - `CLAW_TREASURY_TELEGRAM_BOT_TOKEN`
@@ -115,7 +116,7 @@ curl -X POST "https://api.telegram.org/bot$CLAW_TREASURY_TELEGRAM_BOT_TOKEN/setW
   -d '{
     "url": "https://claw-treasury.vercel.app/api/telegram/webhook",
     "secret_token": "'"$CLAW_TREASURY_TELEGRAM_WEBHOOK_SECRET"'",
-    "allowed_updates": ["message"]
+    "allowed_updates": ["message", "callback_query"]
   }'
 ```
 
@@ -129,6 +130,7 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - Telegram topic or DM can create or use a treasury room bound to its chat context
 - Each newly created Telegram treasury room binds to its own derived WDK account index under the configured default alias
 - Spend requests are created in chat and echoed back with a short ref
+- Spend requests in Telegram now render inline `Approve` and `Reject` buttons in addition to text commands
 - Approvers are matched from Telegram usernames against configured approver handles
 - Treasury policy can now be updated in chat with `set approvers`, `set quorum`, `set daily limit`, and recipient allowlist commands
 - Recipient allowlists are enforced on both Telegram-created requests and dashboard-created requests
