@@ -62,6 +62,34 @@ type ToastState = {
   message: string;
 } | null;
 
+type WalletActionKind = "rotate" | "rotate-sweep" | "rollback" | "set-index" | "set-index-sweep";
+
+type WalletActionResponse =
+  | {
+      ok: true;
+      room: TreasuryRoom;
+      action: {
+        kind: WalletActionKind;
+        summary: string;
+        sweep?: {
+          txHash: string | null;
+          explorerUrl: string | null;
+          gasSweepTxHash: string | null;
+          gasSweepExplorerUrl: string | null;
+          sweptAmount: string;
+          gasSweptAmount: string;
+          fromWalletAddress: string;
+          toWalletAddress: string;
+          fromGasReserve: string;
+          toGasReserve: string;
+        };
+      };
+    }
+  | {
+      ok: false;
+      error?: string;
+    };
+
 type TerminalBlueprint = {
   scope: string;
   phase: string;
@@ -151,6 +179,15 @@ function formatClock(value: string | Date): string {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+  });
+}
+
+function formatStamp(value: string | Date): string {
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -518,6 +555,9 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
 
   const selectedRoom = rooms.find((room) => room.id === selectedRoomId) ?? rooms[0] ?? null;
   const selectedRoomWdkReady = selectedRoom ? isRoomWdkReady(selectedRoom, wdk) : false;
+  const activeWalletActionCount =
+    selectedRoom?.requests.filter((request) => request.status === "pending-approvals" || request.status === "approved").length ?? 0;
+  const walletActionBlocked = activeWalletActionCount > 0;
 
   const totalBalance = rooms.reduce((sum, room) => sum + numeric(room.balance), 0);
   const totalPending = rooms.reduce(
@@ -999,17 +1039,73 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             }),
           });
 
+          const body = (await res.json().catch(() => null)) as { room?: TreasuryRoom; error?: string } | null;
           if (!res.ok) {
-            const body = (await res.json().catch(() => null)) as { error?: string } | null;
             throw new Error(body?.error || "policy_update_failed");
           }
 
+          if (body?.room) {
+            setDrawerForm(mapRoomToDrawer(body.room));
+          }
           setDrawerOpen(false);
           refreshWithToast("Wallet management module updated. Claw will use the refreshed WDK policy on the next cycle.");
         } catch (cause) {
           setToast({
             tone: "error",
             message: cause instanceof Error ? cause.message : "Could not update wallet policy.",
+          });
+        }
+      })();
+    });
+  }
+
+  function summarizeWalletAction(body: Extract<WalletActionResponse, { ok: true }>): string {
+    const parts = [body.action.summary];
+    if (body.action.sweep) {
+      if (numeric(body.action.sweep.sweptAmount) > 0) {
+        parts.push(`Moved ${body.action.sweep.sweptAmount} ${body.room.assetSymbol} into the new vault.`);
+      }
+      if (numeric(body.action.sweep.gasSweptAmount) > 0) {
+        parts.push(`Carried forward ${body.action.sweep.gasSweptAmount} native gas.`);
+      }
+      parts.push(`Residual gas on the old wallet: ${body.action.sweep.fromGasReserve}.`);
+    }
+    return parts.join(" ");
+  }
+
+  function submitWalletAction(action: WalletActionKind) {
+    if (!selectedRoom) return;
+
+    const targetAccountIndex =
+      action === "set-index" || action === "set-index-sweep" ? Number(drawerForm?.wdkAccountIndex ?? selectedRoom.wdkAccountIndex) : undefined;
+
+    startTransition(() => {
+      void (async () => {
+        try {
+          const res = await fetch("/api/treasury/wallet-actions", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              roomId: selectedRoom.id,
+              action,
+              targetAccountIndex,
+            }),
+          });
+
+          const body = (await res.json().catch(() => null)) as WalletActionResponse | null;
+          if (!res.ok || !body) {
+            throw new Error((body && "error" in body && body.error) || "wallet_action_failed");
+          }
+          if (!body.ok) {
+            throw new Error(body.error || "wallet_action_failed");
+          }
+
+          setDrawerForm(mapRoomToDrawer(body.room));
+          refreshWithToast(summarizeWalletAction(body));
+        } catch (cause) {
+          setToast({
+            tone: "error",
+            message: cause instanceof Error ? cause.message : "Could not run the wallet action.",
           });
         }
       })();
@@ -2178,6 +2274,109 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                   <p className="mt-3 text-sm leading-7 text-zinc-400">
                     This drawer mirrors the WDK philosophy: wallet controls are modular. You can rotate the session binding, narrow the daily cap,
                     or reduce agent authority while leaving the underlying treasury vault non-custodial.
+                  </p>
+                </div>
+
+                {selectedRoom ? (
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                    <div className="rounded-[24px] border border-white/10 bg-black/25 p-4">
+                      <div className="ct-label">Live binding</div>
+                      <div className="mt-4 space-y-3">
+                        <div>
+                          <p className="text-sm text-zinc-500">Signer capsule</p>
+                          <p className="mt-1 font-mono text-sm text-white">
+                            {selectedRoom.wdkKeyAlias} #{selectedRoom.wdkAccountIndex}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-zinc-500">Bound wallet</p>
+                          <p className="mt-1 font-mono text-sm text-white break-all">{selectedRoom.walletAddress}</p>
+                        </div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <p className="text-sm text-zinc-500">{selectedRoom.assetSymbol} reserve</p>
+                            <p className="mt-1 font-mono text-sm text-white">{selectedRoom.balance}</p>
+                          </div>
+                          <div>
+                            <p className="text-sm text-zinc-500">Native gas</p>
+                            <p className="mt-1 font-mono text-sm text-white">{selectedRoom.gasReserve}</p>
+                          </div>
+                        </div>
+                        <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3 text-xs leading-6 text-zinc-400">
+                          {walletActionBlocked
+                            ? `Wallet actions are locked until ${activeWalletActionCount} pending or approved request${activeWalletActionCount === 1 ? "" : "s"} is cleared.`
+                            : "Wallet actions are clear. Rotate, sweep, or rebind directly from this drawer without editing raw fields."}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-white/10 bg-black/25 p-4">
+                      <div className="ct-label">Binding history</div>
+                      {selectedRoom.walletHistory.length === 0 ? (
+                        <p className="mt-4 text-sm leading-7 text-zinc-500">No previous wallet binding stored yet. The first rotate or rebind will start the rollback trail.</p>
+                      ) : (
+                        <ul className="mt-4 space-y-3">
+                          {selectedRoom.walletHistory
+                            .slice(-4)
+                            .reverse()
+                            .map((entry) => (
+                              <li key={`${entry.wdkKeyAlias}_${entry.wdkAccountIndex}_${entry.recordedAt}`} className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3">
+                                <p className="font-mono text-sm text-white">
+                                  {entry.wdkKeyAlias} #{entry.wdkAccountIndex}
+                                </p>
+                                <p className="mt-1 font-mono text-xs text-zinc-500">{entry.walletAddress}</p>
+                                <p className="mt-2 text-xs text-zinc-400">{formatStamp(entry.recordedAt)}</p>
+                              </li>
+                            ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                  <div className="ct-label">Wallet actions</div>
+                  <p className="mt-3 text-sm leading-7 text-zinc-400">
+                    Rotate to the next unused derived account, roll back to the last binding, or rebind this room to the index in the field below.
+                    Sweep operations move the treasury token balance and then best-effort carry forward leftover native gas into the new wallet.
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button type="button" className="ct-button-primary" disabled={isPending || !selectedRoom || walletActionBlocked} onClick={() => submitWalletAction("rotate")}>
+                      Rotate wallet
+                    </button>
+                    <button type="button" className="ct-button-secondary" disabled={isPending || !selectedRoom || walletActionBlocked} onClick={() => submitWalletAction("rotate-sweep")}>
+                      Rotate + sweep
+                    </button>
+                    <button
+                      type="button"
+                      className="ct-button-ghost"
+                      disabled={isPending || !selectedRoom || walletActionBlocked || selectedRoom.walletHistory.length === 0}
+                      onClick={() => submitWalletAction("rollback")}
+                    >
+                      Rollback
+                    </button>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      className="ct-button-ghost"
+                      disabled={isPending || !selectedRoom || walletActionBlocked || !drawerForm?.wdkAccountIndex.trim()}
+                      onClick={() => submitWalletAction("set-index")}
+                    >
+                      Rebind to index
+                    </button>
+                    <button
+                      type="button"
+                      className="ct-button-ghost"
+                      disabled={isPending || !selectedRoom || walletActionBlocked || !drawerForm?.wdkAccountIndex.trim()}
+                      onClick={() => submitWalletAction("set-index-sweep")}
+                    >
+                      Rebind + sweep
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs leading-6 text-zinc-500">
+                    Rebind actions use the current <span className="font-mono text-zinc-300">WDK account index</span> field as the target. Save is still
+                    available below for manual route, alias, and policy changes.
                   </p>
                 </div>
 

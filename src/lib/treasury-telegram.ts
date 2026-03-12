@@ -96,6 +96,11 @@ function requestReference(request: TreasurySpendRequest): string {
   return request.id.replace(/^req_/, "").slice(0, 6);
 }
 
+function numericValue(value: string): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function commandHelp(): string {
   return [
     "ClawTreasury commands",
@@ -578,7 +583,7 @@ async function handleRotateWallet(
         roomId: room.id,
         walletAddress: sweep.toWalletAddress,
         balance: sweep.toBalance,
-        gasReserve: "0",
+        gasReserve: sweep.toGasReserve,
         wdkAccountIndex: nextAccountIndex,
         walletHistory: [...room.walletHistory, historyEntry],
         notes: `${room.notes}\nRotated wallet with sweep from Telegram by ${formatContextActor(context)}.`.trim(),
@@ -594,11 +599,16 @@ async function handleRotateWallet(
           `Treasury wallet rotated for ${updatedRoom.name}.`,
           `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
           `Wallet: ${updatedRoom.walletAddress}`,
-          sweep.txHash
+          numericValue(sweep.sweptAmount) > 0
             ? `Sweep: ${sweep.sweptAmount} ${updatedRoom.assetSymbol} moved from ${sweep.fromWalletAddress} to ${sweep.toWalletAddress}`
-            : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+            : numericValue(sweep.gasSweptAmount) > 0
+              ? `Sweep: no ${updatedRoom.assetSymbol} balance was present, but native gas was carried into the new wallet.`
+              : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+          ...(numericValue(sweep.gasSweptAmount) > 0 ? [`Native gas moved: ${sweep.gasSweptAmount}`] : []),
           ...(sweep.txHash ? [`Explorer: ${sweep.explorerUrl}`] : []),
+          ...(sweep.gasSweepTxHash ? [`Gas explorer: ${sweep.gasSweepExplorerUrl}`] : []),
           `New ${updatedRoom.assetSymbol} balance: ${updatedRoom.balance}`,
+          `New wallet gas reserve: ${updatedRoom.gasReserve}`,
           `Old wallet gas remaining: ${sweep.fromGasReserve}`,
         ].join("\n"),
       );
@@ -738,7 +748,7 @@ async function handleSetWalletIndex(
         roomId: room.id,
         walletAddress: sweep.toWalletAddress,
         balance: sweep.toBalance,
-        gasReserve: "0",
+        gasReserve: sweep.toGasReserve,
         wdkAccountIndex: input.accountIndex,
         walletHistory: [...room.walletHistory, historyEntry],
         notes: `${room.notes}\nRebound wallet index from Telegram by ${formatContextActor(context)}.`.trim(),
@@ -754,11 +764,16 @@ async function handleSetWalletIndex(
           `Treasury wallet rebound for ${updatedRoom.name}.`,
           `WDK signer: ${updatedRoom.wdkKeyAlias} #${updatedRoom.wdkAccountIndex}`,
           `Wallet: ${updatedRoom.walletAddress}`,
-          sweep.txHash
+          numericValue(sweep.sweptAmount) > 0
             ? `Sweep: ${sweep.sweptAmount} ${updatedRoom.assetSymbol} moved into the rebound wallet.`
-            : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+            : numericValue(sweep.gasSweptAmount) > 0
+              ? `Sweep: no ${updatedRoom.assetSymbol} balance was present, but native gas was carried into the rebound wallet.`
+              : `Sweep: no ${updatedRoom.assetSymbol} balance was present, so only the wallet binding changed.`,
+          ...(numericValue(sweep.gasSweptAmount) > 0 ? [`Native gas moved: ${sweep.gasSweptAmount}`] : []),
           ...(sweep.txHash ? [`Explorer: ${sweep.explorerUrl}`] : []),
+          ...(sweep.gasSweepTxHash ? [`Gas explorer: ${sweep.gasSweepExplorerUrl}`] : []),
           `New ${updatedRoom.assetSymbol} balance: ${updatedRoom.balance}`,
+          `New wallet gas reserve: ${updatedRoom.gasReserve}`,
         ].join("\n"),
       );
       return;

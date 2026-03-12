@@ -16,6 +16,7 @@ Standalone ClawTreasury app for the Tether WDK hackathon.
   - execute approved payouts through WDK on Plasma
   - attach manual receipts only as a fallback
   - export a room audit trail as JSON or CSV
+  - rotate, roll back, or rebind treasury wallets directly from the dashboard
 - Telegram topics can now act as the primary treasury surface through the webhook bridge at `/api/telegram/webhook`
 - New Telegram treasury rooms provision a unique derived WDK account index under the configured Plasma signer instead of reusing one shared account
 
@@ -136,9 +137,11 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - Treasury policy can now be updated in chat with `set approvers`, `set quorum`, `set daily limit`, and recipient allowlist commands
 - Recipient allowlists are enforced on both Telegram-created requests and dashboard-created requests
 - Existing Telegram treasury rooms can rotate to a fresh derived WDK account index with `rotate wallet`
-- `rotate wallet sweep` moves the current treasury token balance into the new derived wallet before rebinding the room
+- `rotate wallet sweep` moves the current treasury token balance into the new derived wallet before rebinding the room, then best-effort carries forward leftover native gas
 - Telegram treasury rooms can revert the last wallet rotation with `rollback wallet`
 - `set wallet index <n>` explicitly rebinds a treasury room to a chosen derived WDK account, including the original `#0` wallet
+- `set wallet index <n> sweep` can rebind and sweep in the same step
+- The dashboard now exposes the same rotate, rollback, and rebind flows through the Wallet Management drawer
 - When quorum is met, Claw executes through WDK and posts the tx hash back into the same thread
 - WhatsApp is still modeled in the data layer but not yet wired as a live transport
 
@@ -159,4 +162,5 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - `POST /api/treasury/approvals`
 - `POST /api/treasury/execution`
 - `GET /api/treasury/export?roomId=<id>&format=json|csv`
+- `POST /api/treasury/wallet-actions`
 - `POST /api/treasury/execution/wdk`

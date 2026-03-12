@@ -36,11 +36,16 @@ type RotateWithSweepResult = {
   explorerUrl: string | null;
   feeWei: string | null;
   quoteFeeWei: string | null;
+  gasSweepTxHash: string | null;
+  gasSweepExplorerUrl: string | null;
+  gasSweepFeeWei: string | null;
   fromWalletAddress: string;
   toWalletAddress: string;
   toBalance: string;
   fromGasReserve: string;
+  toGasReserve: string;
   sweptAmount: string;
+  gasSweptAmount: string;
 };
 
 type WdkAliasSnapshot = {
@@ -374,59 +379,89 @@ export async function rotateTreasuryWalletWithSweep(input: RotateWithSweepInput)
       throw new Error("wdk_wallet_rotation_target_matches_current");
     }
 
-    if (currentTokenBalance === BigInt(0)) {
-      const [toBalance, fromGasReserve] = await Promise.all([
-        nextAccount.getTokenBalance(assetAddress),
-        currentAccount.getBalance(),
-      ]);
+    let transferHash: string | null = null;
+    let transferExplorerUrl: string | null = null;
+    let transferFeeWei: string | null = null;
+    let transferQuoteFeeWei: string | null = null;
+    let sweptAmount = "0.00";
+    let gasSweepTxHash: string | null = null;
+    let gasSweepExplorerUrl: string | null = null;
+    let gasSweepFeeWei: string | null = null;
+    let gasSweptAmount = "0";
 
-      return {
-        txHash: null,
-        explorerUrl: null,
-        feeWei: null,
-        quoteFeeWei: null,
-        fromWalletAddress,
-        toWalletAddress,
-        toBalance: formatUnits(toBalance, assetDecimals, assetDecimals),
-        fromGasReserve: formatUnits(fromGasReserve, DEFAULT_NATIVE_DECIMALS, 6),
-        sweptAmount: "0.00",
-      };
+    if (currentTokenBalance > BigInt(0)) {
+      const quote = await currentAccount.quoteTransfer({
+        token: assetAddress,
+        recipient: toWalletAddress,
+        amount: currentTokenBalance,
+      });
+      const currentNativeBalance = await currentAccount.getBalance();
+
+      if (currentNativeBalance < quote.fee) {
+        throw new Error(
+          `WDK wallet ${fromWalletAddress} has ${formatUnits(currentNativeBalance, DEFAULT_NATIVE_DECIMALS, 6)} native gas on ${input.room.network}, but the estimated fee to sweep into the rotated wallet is ${formatUnits(quote.fee, DEFAULT_NATIVE_DECIMALS, 6)}. Fund the current wallet with native gas before retrying rotation with sweep.`,
+        );
+      }
+
+      const result = await currentAccount.transfer({
+        token: assetAddress,
+        recipient: toWalletAddress,
+        amount: currentTokenBalance,
+      });
+
+      transferHash = result.hash;
+      transferExplorerUrl = explorerBaseUrl ? `${explorerBaseUrl}${result.hash}` : result.hash;
+      transferFeeWei = result.fee.toString();
+      transferQuoteFeeWei = quote.fee.toString();
+      sweptAmount = formatUnits(currentTokenBalance, assetDecimals, assetDecimals);
     }
 
-    const quote = await currentAccount.quoteTransfer({
-      token: assetAddress,
-      recipient: toWalletAddress,
-      amount: currentTokenBalance,
-    });
-    const currentNativeBalance = await currentAccount.getBalance();
+    const remainingNativeBalance = await currentAccount.getBalance();
+    if (remainingNativeBalance > BigInt(0)) {
+      try {
+        const baseQuote = await currentAccount.quoteSendTransaction({
+          to: toWalletAddress,
+          value: BigInt(0),
+        });
+        const reserveFloor = baseQuote.fee * BigInt(2);
+        const sweepableNative = remainingNativeBalance - reserveFloor;
 
-    if (currentNativeBalance < quote.fee) {
-      throw new Error(
-        `WDK wallet ${fromWalletAddress} has ${formatUnits(currentNativeBalance, DEFAULT_NATIVE_DECIMALS, 6)} native gas on ${input.room.network}, but the estimated fee to sweep into the rotated wallet is ${formatUnits(quote.fee, DEFAULT_NATIVE_DECIMALS, 6)}. Fund the current wallet with native gas before retrying rotation with sweep.`,
-      );
+        if (sweepableNative > BigInt(0)) {
+          const nativeResult = await currentAccount.sendTransaction({
+            to: toWalletAddress,
+            value: sweepableNative,
+          });
+          gasSweepTxHash = nativeResult.hash;
+          gasSweepExplorerUrl = explorerBaseUrl ? `${explorerBaseUrl}${nativeResult.hash}` : nativeResult.hash;
+          gasSweepFeeWei = nativeResult.fee.toString();
+          gasSweptAmount = formatUnits(sweepableNative, DEFAULT_NATIVE_DECIMALS, 6);
+        }
+      } catch {
+        // Leave residual native gas in place if the chain quote drifts or the transfer cannot be submitted safely.
+      }
     }
 
-    const result = await currentAccount.transfer({
-      token: assetAddress,
-      recipient: toWalletAddress,
-      amount: currentTokenBalance,
-    });
-
-    const [toBalance, fromGasReserve] = await Promise.all([
+    const [toBalance, fromGasReserve, toGasReserve] = await Promise.all([
       nextAccount.getTokenBalance(assetAddress),
       currentAccount.getBalance(),
+      nextAccount.getBalance(),
     ]);
 
     return {
-      txHash: result.hash,
-      explorerUrl: explorerBaseUrl ? `${explorerBaseUrl}${result.hash}` : result.hash,
-      feeWei: result.fee.toString(),
-      quoteFeeWei: quote.fee.toString(),
+      txHash: transferHash,
+      explorerUrl: transferExplorerUrl,
+      feeWei: transferFeeWei,
+      quoteFeeWei: transferQuoteFeeWei,
+      gasSweepTxHash,
+      gasSweepExplorerUrl,
+      gasSweepFeeWei,
       fromWalletAddress,
       toWalletAddress,
       toBalance: formatUnits(toBalance, assetDecimals, assetDecimals),
       fromGasReserve: formatUnits(fromGasReserve, DEFAULT_NATIVE_DECIMALS, 6),
-      sweptAmount: formatUnits(currentTokenBalance, assetDecimals, assetDecimals),
+      toGasReserve: formatUnits(toGasReserve, DEFAULT_NATIVE_DECIMALS, 6),
+      sweptAmount,
+      gasSweptAmount,
     };
   } finally {
     currentAccount.dispose();
