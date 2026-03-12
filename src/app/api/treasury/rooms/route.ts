@@ -100,21 +100,32 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "agentMode is invalid" }, { status: 400 });
   }
 
-  const room = await updateTreasuryRoomControl({
-    roomId: body.roomId.trim(),
-    routeCommand: body.routeCommand,
-    sessionKey: body.sessionKey,
-    walletAddress: body.walletAddress,
-    dailyLimit: body.dailyLimit,
-    gasReserve: body.gasReserve,
-    wdkKeyAlias: body.wdkKeyAlias,
-    agentMode: body.agentMode,
-    notes: body.notes,
-  });
-
-  if (!room) {
-    return NextResponse.json({ ok: false, error: "room not found" }, { status: 404 });
+  if (body.approvers && (!Array.isArray(body.approvers) || body.approvers.length === 0)) {
+    return NextResponse.json({ ok: false, error: "approvers must be a non-empty array" }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true, room });
+  try {
+    const room = await updateTreasuryRoomControl({
+      roomId: body.roomId.trim(),
+      routeCommand: body.routeCommand,
+      sessionKey: body.sessionKey,
+      walletAddress: body.walletAddress,
+      dailyLimit: body.dailyLimit,
+      gasReserve: body.gasReserve,
+      wdkKeyAlias: body.wdkKeyAlias,
+      agentMode: body.agentMode,
+      quorum: body.quorum,
+      approvers: body.approvers,
+      notes: body.notes,
+    });
+
+    if (!room) {
+      return NextResponse.json({ ok: false, error: "room not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true, room });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "room_update_failed";
+    return NextResponse.json({ ok: false, error: message }, { status: 400 });
+  }
 }

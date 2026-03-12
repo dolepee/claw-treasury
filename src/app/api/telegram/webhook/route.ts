@@ -15,6 +15,8 @@ export async function GET() {
       "show treasury",
       "balance",
       "history",
+      "set approvers @alice @bob",
+      "set quorum 2",
       "pay 20 USDT to 0x... for design review",
       "approve <ref>",
       "reject <ref>",

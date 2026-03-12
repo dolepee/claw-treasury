@@ -83,6 +83,8 @@ type UpdateRoomControlInput = {
   gasReserve?: string;
   wdkKeyAlias?: string;
   agentMode?: TreasuryAgentMode;
+  quorum?: number;
+  approvers?: TreasuryApprover[];
   notes?: string;
 };
 
@@ -169,6 +171,15 @@ function normalizeExecution(execution: TreasuryExecution): TreasuryExecution {
     quoteFeeWei: execution.quoteFeeWei ?? null,
     wdkAccountAddress: execution.wdkAccountAddress ?? null,
   };
+}
+
+function normalizeApprovers(approvers: TreasuryApprover[]): TreasuryApprover[] {
+  return approvers.map((entry, index) => ({
+    id: entry.id?.trim() || `approver_${index + 1}`,
+    name: entry.name.trim(),
+    role: entry.role.trim() || "approver",
+    handle: entry.handle.trim() || entry.name.trim(),
+  }));
 }
 
 function normalizeStore(store: TreasuryStore): TreasuryStore {
@@ -453,6 +464,12 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
   }
 
   const room = store.rooms[roomIndex];
+  const nextApprovers = Array.isArray(input.approvers) && input.approvers.length > 0 ? normalizeApprovers(input.approvers) : room.approvers;
+  const nextQuorum = input.quorum ?? room.quorum;
+  if (!Number.isFinite(nextQuorum) || nextQuorum < 1 || nextQuorum > nextApprovers.length) {
+    throw new Error(`Quorum must be between 1 and ${nextApprovers.length}.`);
+  }
+
   const now = new Date().toISOString();
   const nextRoom = normalizeRoom({
     ...room,
@@ -463,6 +480,8 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
     gasReserve: input.gasReserve?.trim() || room.gasReserve,
     wdkKeyAlias: input.wdkKeyAlias?.trim() || room.wdkKeyAlias,
     agentMode: input.agentMode ?? room.agentMode,
+    quorum: nextQuorum,
+    approvers: nextApprovers,
     notes: input.notes !== undefined ? input.notes.trim() : room.notes,
     updatedAt: now,
   });

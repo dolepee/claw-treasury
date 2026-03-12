@@ -24,8 +24,9 @@ import {
   loadTreasuryRoomBySessionKey,
   recordTreasuryApproval,
   recordTreasuryExecution,
+  updateTreasuryRoomControl,
 } from "@/lib/treasury";
-import type { TreasuryRoom, TreasurySpendRequest } from "@/lib/types";
+import type { TreasuryApprover, TreasuryRoom, TreasurySpendRequest } from "@/lib/types";
 import {
   executeTreasuryRequestWithWdk,
   getConfiguredTreasuryOperatorKey,
@@ -38,6 +39,8 @@ type ParsedCommand =
   | { kind: "create-treasury" }
   | { kind: "show-treasury" }
   | { kind: "history" }
+  | { kind: "set-approvers"; handles: string[] }
+  | { kind: "set-quorum"; quorum: number }
   | { kind: "pay"; amount: string; recipient: string; memo: string }
   | { kind: "approve" | "reject"; reference: string | null; note: string }
   | { kind: "invalid"; message: string };
@@ -66,6 +69,8 @@ function commandHelp(): string {
     "show treasury",
     "balance",
     "history",
+    "set approvers @alice @bob",
+    "set quorum 2",
     "pay 20 USDT to 0x... for design review",
     "approve <ref> or reply 'approve' to a request",
     "reject <ref> or reply 'reject reason' to a request",
@@ -98,6 +103,31 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
 
   if (/^\/?history\b/.test(lower)) {
     return { kind: "history" };
+  }
+
+  const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
+  if (approverMatch) {
+    const handles = approverMatch[1]
+      .split(/\s+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => (entry.startsWith("@") ? entry : `@${entry}`))
+      .filter((entry) => /^@[a-zA-Z0-9_]{4,}$/.test(entry));
+    if (handles.length === 0) {
+      return { kind: "invalid", message: "Add at least one Telegram handle. Example: set approvers @alice @bob" };
+    }
+
+    return { kind: "set-approvers", handles: [...new Set(handles.map((entry) => entry.toLowerCase()))] };
+  }
+
+  const quorumMatch = text.match(/^\/?(?:set\s+quorum|quorum)\b\s+([0-9]+)$/i);
+  if (quorumMatch) {
+    const quorum = Number(quorumMatch[1]);
+    if (!Number.isFinite(quorum) || quorum < 1) {
+      return { kind: "invalid", message: "Quorum must be a positive integer." };
+    }
+
+    return { kind: "set-quorum", quorum: Math.floor(quorum) };
   }
 
   const decisionMatch = text.match(/^\/?(approve|reject)\b(?:\s+(.+))?$/i);
@@ -161,6 +191,16 @@ function summarizeRoom(room: TreasuryRoom, live: { walletAddress: string; balanc
     `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
     `Approvers: ${approvers}`,
     `Queue: ${pending} pending, ${approved} approved, ${executed} executed`,
+  ].join("\n");
+}
+
+function summarizePolicy(room: TreasuryRoom): string {
+  return [
+    `${room.name} policy updated`,
+    `Quorum: ${room.quorum}/${room.approvers.length}`,
+    `Approvers: ${room.approvers.map((entry) => entry.handle).join(", ")}`,
+    `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
+    `Mode: ${room.agentMode}`,
   ].join("\n");
 }
 
@@ -306,6 +346,91 @@ async function handleHistory(context: TelegramContext, room: TreasuryRoom | null
   }
 
   await reply(context, summarizeHistory(room));
+}
+
+function requirePolicyActor(room: TreasuryRoom | null, context: TelegramContext): TreasuryApprover | null {
+  if (!room) {
+    return null;
+  }
+
+  return matchTelegramApprover(room.approvers, context.message);
+}
+
+async function handleSetApprovers(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "set-approvers" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can change the treasury policy.");
+    return;
+  }
+
+  const nextApprovers = input.handles.map((handle, index) => {
+    const clean = handle.replace(/^@+/, "");
+    return {
+      id: `approver_${index + 1}_${clean.toLowerCase()}`,
+      name: clean,
+      role: clean.toLowerCase() === actor.handle.replace(/^@+/, "").toLowerCase() ? actor.role : "approver",
+      handle: `@${clean}`,
+    } satisfies TreasuryApprover;
+  });
+
+  try {
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      approvers: nextApprovers,
+      quorum: Math.min(room.quorum, nextApprovers.length),
+      notes: `${room.notes}\nUpdated approvers from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+    if (!updatedRoom) {
+      throw new Error("policy_update_failed");
+    }
+
+    await reply(context, summarizePolicy(updatedRoom));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update approvers.";
+    await reply(context, `Policy update failed.\n${message}`);
+  }
+}
+
+async function handleSetQuorum(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "set-quorum" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can change the treasury policy.");
+    return;
+  }
+
+  try {
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      quorum: input.quorum,
+      notes: `${room.notes}\nUpdated quorum from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+    if (!updatedRoom) {
+      throw new Error("policy_update_failed");
+    }
+
+    await reply(context, summarizePolicy(updatedRoom));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update quorum.";
+    await reply(context, `Policy update failed.\n${message}`);
+  }
 }
 
 async function handlePay(
@@ -530,6 +655,16 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
 
   if (command.kind === "history") {
     await handleHistory(context, room);
+    return { handled: true };
+  }
+
+  if (command.kind === "set-approvers") {
+    await handleSetApprovers(context, room, command);
+    return { handled: true };
+  }
+
+  if (command.kind === "set-quorum") {
+    await handleSetQuorum(context, room, command);
     return { handled: true };
   }
 
