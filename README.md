@@ -77,25 +77,26 @@ See [.env.example](./.env.example) for the exact env variable names.
 ## Telegram Bridge
 ClawTreasury now supports a Telegram-first treasury flow:
 
-- `create treasury`
-- `show treasury`
-- `balance`
-- `history`
-- `allowlist`
-- `rotate wallet`
-- `rotate wallet sweep`
-- `rollback wallet`
-- `set wallet index 0`
-- `set wallet index 0 sweep`
-- `set approvers @alice @bob`
-- `set quorum 2`
-- `set daily limit 250`
-- `allow 0x... for payroll`
-- `remove recipient 0x...`
-- `pay 20 USDT to 0x... for design review`
-- `approve <ref>` or reply `approve` to the request message
-- `reject <ref>` or reply `reject reason` to the request message
+- `/create_treasury`
+- `/show_treasury`
+- `/balance`
+- `/history`
+- `/allowlist`
+- `/rotate_wallet`
+- `/rotate_wallet sweep`
+- `/rollback_wallet`
+- `/set_wallet_index 0`
+- `/set_wallet_index 0 sweep`
+- `/set_approvers @alice @bob`
+- `/set_quorum 2`
+- `/set_daily_limit 250`
+- `/allow_recipient 0x... payroll`
+- `/remove_recipient 0x...`
+- `/pay 20 0x... design review`
+- `/approve <ref>` or reply `approve` to the request message
+- `/reject <ref>` or reply `reject reason` to the request message
 - request messages also expose inline `Approve` and `Reject` buttons in Telegram
+- Telegram now registers these commands with Bot API, so typing `/` in the chat surfaces the treasury command menu
 
 ### Required Telegram env
 - `CLAW_TREASURY_TELEGRAM_BOT_TOKEN`
@@ -128,6 +129,8 @@ Health / command discovery:
 ```bash
 curl https://claw-treasury.vercel.app/api/telegram/webhook
 ```
+
+The webhook health route also syncs the registered Telegram command menu through `setMyCommands`, and the webhook path refreshes it opportunistically on live traffic.
 
 ### Current scope
 - Telegram topic or DM can create or use a treasury room bound to its chat context

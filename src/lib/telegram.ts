@@ -21,6 +21,11 @@ export type TelegramInlineButton = {
   callbackData: string;
 };
 
+export type TelegramBotCommand = {
+  command: string;
+  description: string;
+};
+
 export type TelegramMessage = {
   message_id: number;
   text?: string;
@@ -60,6 +65,30 @@ export type TelegramRuntime = {
   defaultWdkAlias: string | null;
 };
 
+let commandSyncPromise: Promise<boolean> | null = null;
+let commandSyncAt = 0;
+const COMMAND_SYNC_TTL_MS = 10 * 60 * 1000;
+
+const TELEGRAM_TREASURY_COMMANDS: TelegramBotCommand[] = [
+  { command: "create_treasury", description: "Create or bind a treasury room in this chat or topic" },
+  { command: "show_treasury", description: "Show the current treasury room state and signer" },
+  { command: "balance", description: "Alias for show_treasury" },
+  { command: "history", description: "Show recent request and execution history" },
+  { command: "allowlist", description: "Show the current recipient allowlist" },
+  { command: "rotate_wallet", description: "Rotate to the next derived WDK wallet" },
+  { command: "rollback_wallet", description: "Restore the most recent prior wallet binding" },
+  { command: "set_wallet_index", description: "Rebind this room to a specific WDK account index" },
+  { command: "set_approvers", description: "Set Telegram approver handles for this treasury" },
+  { command: "set_quorum", description: "Set the required approval quorum" },
+  { command: "set_daily_limit", description: "Set the daily autonomous spend cap" },
+  { command: "allow_recipient", description: "Add a recipient to the treasury allowlist" },
+  { command: "remove_recipient", description: "Remove a recipient from the allowlist" },
+  { command: "pay", description: "Create a spend request with amount, recipient, and memo" },
+  { command: "approve", description: "Approve a request by ref or reply" },
+  { command: "reject", description: "Reject a request by ref or reply" },
+  { command: "help", description: "Show the full treasury command guide" },
+];
+
 type TelegramCreateTreasuryDefaults = {
   routeCommand: string;
   network: string;
@@ -77,6 +106,15 @@ function getBotToken(): string | null {
 
 function getWebhookSecret(): string | null {
   return process.env.CLAW_TREASURY_TELEGRAM_WEBHOOK_SECRET?.trim() || null;
+}
+
+function telegramApiUrl(method: string): string {
+  const token = getBotToken();
+  if (!token) {
+    throw new Error("telegram_bot_token_missing");
+  }
+
+  return `https://api.telegram.org/bot${token}/${method}`;
 }
 
 function normalizeHandle(value: string | undefined): string {
@@ -109,6 +147,10 @@ export function loadTelegramRuntime(): TelegramRuntime {
     defaultApproversConfigured: parseTelegramDefaultApprovers().length > 0,
     defaultWdkAlias: process.env.CLAW_TREASURY_TELEGRAM_DEFAULT_WDK_ALIAS?.trim() || null,
   };
+}
+
+export function getTelegramTreasuryCommands(): TelegramBotCommand[] {
+  return TELEGRAM_TREASURY_COMMANDS;
 }
 
 export function verifyTelegramWebhookSecret(headerValue: string | null): boolean {
@@ -241,12 +283,7 @@ export function formatTelegramActor(message: TelegramMessage): string {
 }
 
 export async function sendTelegramMessage(input: SendTelegramMessageInput): Promise<{ messageId: number }> {
-  const token = getBotToken();
-  if (!token) {
-    throw new Error("telegram_bot_token_missing");
-  }
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const response = await fetch(telegramApiUrl("sendMessage"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -284,12 +321,7 @@ export async function answerTelegramCallbackQuery(input: {
   text?: string;
   showAlert?: boolean;
 }): Promise<void> {
-  const token = getBotToken();
-  if (!token) {
-    throw new Error("telegram_bot_token_missing");
-  }
-
-  const response = await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+  const response = await fetch(telegramApiUrl("answerCallbackQuery"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -307,4 +339,52 @@ export async function answerTelegramCallbackQuery(input: {
   if (!response.ok || !body?.ok) {
     throw new Error(body?.description || "telegram_callback_answer_failed");
   }
+}
+
+async function setTelegramCommandsForScope(scope: { type: "default" | "all_group_chats" | "all_private_chats" }): Promise<void> {
+  const response = await fetch(telegramApiUrl("setMyCommands"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      scope,
+      commands: TELEGRAM_TREASURY_COMMANDS,
+    }),
+    cache: "no-store",
+  });
+
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; description?: string } | null;
+  if (!response.ok || !body?.ok) {
+    throw new Error(body?.description || "telegram_set_commands_failed");
+  }
+}
+
+export async function syncTelegramTreasuryCommands(force = false): Promise<boolean> {
+  if (!getBotToken()) {
+    return false;
+  }
+
+  const now = Date.now();
+  if (!force && commandSyncAt > 0 && now - commandSyncAt < COMMAND_SYNC_TTL_MS) {
+    return true;
+  }
+
+  if (!force && commandSyncPromise) {
+    return commandSyncPromise;
+  }
+
+  commandSyncPromise = (async () => {
+    await Promise.all([
+      setTelegramCommandsForScope({ type: "default" }),
+      setTelegramCommandsForScope({ type: "all_private_chats" }),
+      setTelegramCommandsForScope({ type: "all_group_chats" }),
+    ]);
+    commandSyncAt = Date.now();
+    commandSyncPromise = null;
+    return true;
+  })().catch((error) => {
+    commandSyncPromise = null;
+    throw error;
+  });
+
+  return commandSyncPromise;
 }

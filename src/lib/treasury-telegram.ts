@@ -104,29 +104,46 @@ function numericValue(value: string): number {
 function commandHelp(): string {
   return [
     "ClawTreasury commands",
-    "create treasury",
-    "show treasury",
-    "balance",
-    "history",
-    "allowlist",
-    "rotate wallet",
-    "rotate wallet sweep",
-    "rollback wallet",
-    "set wallet index 0",
-    "set wallet index 0 sweep",
-    "set approvers @alice @bob",
-    "set quorum 2",
-    "set daily limit 250",
-    "allow 0x... for payroll",
-    "remove recipient 0x...",
-    "pay 20 USDT to 0x... for design review",
-    "approve <ref> or reply 'approve' to a request",
-    "reject <ref> or reply 'reject reason' to a request",
+    "/create_treasury",
+    "/show_treasury",
+    "/balance",
+    "/history",
+    "/allowlist",
+    "/rotate_wallet",
+    "/rotate_wallet sweep",
+    "/rollback_wallet",
+    "/set_wallet_index 0",
+    "/set_wallet_index 0 sweep",
+    "/set_approvers @alice @bob",
+    "/set_quorum 2",
+    "/set_daily_limit 250",
+    "/allow_recipient 0x... payroll",
+    "/remove_recipient 0x...",
+    "/pay 20 0x... design review",
+    "/approve <ref> or reply 'approve' to a request",
+    "/reject <ref> or reply 'reject reason' to a request",
   ].join("\n");
 }
 
 function normalizeCommandText(text: string): string {
-  return text.trim().replace(/\s+/g, " ");
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const [rawCommand, ...rest] = trimmed.split(/\s+/);
+  if (!rawCommand.startsWith("/")) {
+    return trimmed.replace(/\s+/g, " ");
+  }
+
+  const normalizedCommand = rawCommand
+    .slice(1)
+    .split("@")[0]
+    .replace(/_/g, " ")
+    .trim()
+    .toLowerCase();
+
+  return [normalizedCommand, ...rest].join(" ").trim().replace(/\s+/g, " ");
 }
 
 function parseTelegramCommand(rawText: string): ParsedCommand | null {
@@ -137,37 +154,37 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
 
   const lower = text.toLowerCase();
 
-  if (/^\/?(start|help)\b/.test(lower)) {
+  if (/^(start|help)$/.test(lower) || /^(start|help)\b/.test(lower)) {
     return { kind: "help" };
   }
 
-  if (/^\/?create(?:_treasury|\s+treasury)\b/.test(lower)) {
+  if (/^create(?:\s+treasury)?\b/.test(lower)) {
     return { kind: "create-treasury" };
   }
 
-  if (/^\/?(show(?:_treasury|\s+treasury)|balance)\b/.test(lower) || lower === "show treasury" || lower === "balance") {
+  if (/^(show(?:\s+treasury)?|balance)\b/.test(lower) || lower === "show treasury" || lower === "balance") {
     return { kind: "show-treasury" };
   }
 
-  if (/^\/?history\b/.test(lower)) {
+  if (/^history\b/.test(lower)) {
     return { kind: "history" };
   }
 
-  if (/^\/?(allowlist|show\s+allowlist)\b/.test(lower)) {
+  if (/^(allowlist|show\s+allowlist)\b/.test(lower)) {
     return { kind: "allowlist" };
   }
 
-  const rotateWalletMatch = text.match(/^\/?(?:rotate\s+wallet|rotate\s+signer|new\s+wallet)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i);
+  const rotateWalletMatch = text.match(/^(?:rotate\s+wallet|rotate\s+signer|new\s+wallet)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i);
   if (rotateWalletMatch) {
     return { kind: "rotate-wallet", sweep: Boolean(rotateWalletMatch[1]) };
   }
 
-  if (/^\/?(rollback\s+wallet|revert\s+wallet|undo\s+wallet)\b/.test(lower)) {
+  if (/^(rollback\s+wallet|revert\s+wallet|undo\s+wallet)\b/.test(lower)) {
     return { kind: "rollback-wallet" };
   }
 
   const setWalletIndexMatch = text.match(
-    /^\/?(?:set\s+wallet\s+index|wallet\s+index|bind\s+wallet)\b\s+([0-9]+)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i,
+    /^(?:set\s+wallet\s+index|wallet\s+index|bind\s+wallet)\b\s+([0-9]+)(?:\s+(sweep|with\s+sweep|and\s+sweep))?$/i,
   );
   if (setWalletIndexMatch) {
     return {
@@ -177,7 +194,7 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     };
   }
 
-  const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
+  const approverMatch = text.match(/^(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
   if (approverMatch) {
     const handles = approverMatch[1]
       .split(/\s+/)
@@ -192,7 +209,7 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     return { kind: "set-approvers", handles: [...new Set(handles.map((entry) => entry.toLowerCase()))] };
   }
 
-  const quorumMatch = text.match(/^\/?(?:set\s+quorum|quorum)\b\s+([0-9]+)$/i);
+  const quorumMatch = text.match(/^(?:set\s+quorum|quorum)\b\s+([0-9]+)$/i);
   if (quorumMatch) {
     const quorum = Number(quorumMatch[1]);
     if (!Number.isFinite(quorum) || quorum < 1) {
@@ -202,13 +219,13 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     return { kind: "set-quorum", quorum: Math.floor(quorum) };
   }
 
-  const dailyLimitMatch = text.match(/^\/?(?:set\s+daily\s+limit|daily\s+limit|limit)\b\s+([0-9]+(?:\.[0-9]+)?)$/i);
+  const dailyLimitMatch = text.match(/^(?:set\s+daily\s+limit|daily\s+limit|limit)\b\s+([0-9]+(?:\.[0-9]+)?)$/i);
   if (dailyLimitMatch) {
     return { kind: "set-daily-limit", dailyLimit: Number(dailyLimitMatch[1]).toFixed(2) };
   }
 
   const allowRecipientMatch = text.match(
-    /^\/?(?:allow|allowlist\s+add|allow\s+recipient)\b\s+(0x[a-fA-F0-9]{40})(?:\s+(?:for|as)\s+(.+))?$/i,
+    /^(?:allow|allowlist\s+add|allow\s+recipient)\b\s+(0x[a-fA-F0-9]{40})(?:\s+(?:for|as)\s+(.+))?$/i,
   );
   if (allowRecipientMatch) {
     return {
@@ -218,7 +235,7 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     };
   }
 
-  const removeRecipientMatch = text.match(/^\/?(?:remove\s+recipient|unallow|allowlist\s+remove)\b\s+(0x[a-fA-F0-9]{40})$/i);
+  const removeRecipientMatch = text.match(/^(?:remove\s+recipient|unallow|allowlist\s+remove)\b\s+(0x[a-fA-F0-9]{40})$/i);
   if (removeRecipientMatch) {
     return {
       kind: "remove-recipient",
@@ -226,7 +243,7 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     };
   }
 
-  const decisionMatch = text.match(/^\/?(approve|reject)\b(?:\s+(.+))?$/i);
+  const decisionMatch = text.match(/^(approve|reject)\b(?:\s+(.+))?$/i);
   if (decisionMatch) {
     const tail = decisionMatch[2]?.trim() || "";
     const [firstToken = "", ...restTokens] = tail.split(/\s+/).filter(Boolean);
@@ -239,7 +256,7 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
   }
 
   const payMatch = text.match(
-    /^\/?(?:pay|request(?:\s+payment)?)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:usd[t₮]?|usdt)?\s+to\s+(0x[a-fA-F0-9]{40})(?:\s+for\s+(.+))?$/i,
+    /^(?:pay|request(?:\s+payment)?)\s+([0-9]+(?:\.[0-9]+)?)\s*(?:usd[t₮]?|usdt)?(?:\s+to)?\s+(0x[a-fA-F0-9]{40})(?:\s+(?:for\s+)?(.+))?$/i,
   );
   if (payMatch) {
     const memo = payMatch[3]?.trim();

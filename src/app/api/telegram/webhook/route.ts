@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadTelegramRuntime, TelegramUpdate, verifyTelegramWebhookSecret } from "@/lib/telegram";
+import { getTelegramTreasuryCommands, loadTelegramRuntime, syncTelegramTreasuryCommands, TelegramUpdate, verifyTelegramWebhookSecret } from "@/lib/telegram";
 import { handleTelegramUpdate } from "@/lib/treasury-telegram";
 
 export const dynamic = "force-dynamic";
@@ -7,29 +7,23 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const runtimeInfo = loadTelegramRuntime();
+  let commandsRegistered = false;
+  let commandsError: string | null = null;
+
+  if (runtimeInfo.configured) {
+    try {
+      commandsRegistered = await syncTelegramTreasuryCommands();
+    } catch (error) {
+      commandsError = error instanceof Error ? error.message : "telegram_command_sync_failed";
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     telegram: runtimeInfo,
-    commands: [
-      "create treasury",
-      "show treasury",
-      "balance",
-      "history",
-      "allowlist",
-      "rotate wallet",
-      "rotate wallet sweep",
-      "rollback wallet",
-      "set wallet index 0",
-      "set wallet index 0 sweep",
-      "set approvers @alice @bob",
-      "set quorum 2",
-      "set daily limit 250",
-      "allow 0x... for payroll",
-      "remove recipient 0x...",
-      "pay 20 USDT to 0x... for design review",
-      "approve <ref>",
-      "reject <ref>",
-    ],
+    commandsRegistered,
+    commandsError,
+    commands: getTelegramTreasuryCommands(),
   });
 }
 
@@ -37,6 +31,8 @@ export async function POST(request: NextRequest) {
   if (!verifyTelegramWebhookSecret(request.headers.get("x-telegram-bot-api-secret-token"))) {
     return NextResponse.json({ ok: false, error: "telegram_webhook_secret_invalid" }, { status: 401 });
   }
+
+  void syncTelegramTreasuryCommands().catch(() => null);
 
   const update = (await request.json().catch(() => null)) as TelegramUpdate | null;
   if (!update) {
