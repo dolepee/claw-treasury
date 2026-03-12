@@ -1016,6 +1016,12 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
     });
   }
 
+  function exportAudit(format: "json" | "csv") {
+    if (!selectedRoom) return;
+    const url = `/api/treasury/export?roomId=${encodeURIComponent(selectedRoom.id)}&format=${format}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
   const selectedRequestForm = selectedRoom
     ? requestForms[selectedRoom.id] ?? { requestedBy: selectedRoom.approvers[0]?.name ?? "Operator", amount: "", recipient: "", memo: "" }
     : null;
@@ -1196,6 +1202,12 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
             </div>
 
             <div className="flex flex-wrap gap-3">
+              <button type="button" className="ct-button-ghost" disabled={!selectedRoom} onClick={() => exportAudit("json")}>
+                Export JSON
+              </button>
+              <button type="button" className="ct-button-ghost" disabled={!selectedRoom} onClick={() => exportAudit("csv")}>
+                Export CSV
+              </button>
               <button type="button" className="ct-button-secondary" disabled={!selectedRoom} onClick={() => setDrawerOpen(true)}>
                 Wallet Management
               </button>
