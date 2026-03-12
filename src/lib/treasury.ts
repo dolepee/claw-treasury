@@ -3,6 +3,7 @@ import { get, put } from "@vercel/blob";
 import { getDataDir } from "@/lib/paths";
 import { readJsonFile, writeJsonFile } from "@/lib/fs-utils";
 import {
+  TreasuryAllowedRecipient,
   TreasuryAgentMode,
   TreasuryApprovalDecision,
   TreasuryApprover,
@@ -41,6 +42,7 @@ type CreateRoomInput = {
   notes: string;
   status?: TreasuryRoomStatus;
   approvers: TreasuryApprover[];
+  allowedRecipients?: TreasuryAllowedRecipient[];
 };
 
 type CreateRequestInput = {
@@ -85,6 +87,7 @@ type UpdateRoomControlInput = {
   agentMode?: TreasuryAgentMode;
   quorum?: number;
   approvers?: TreasuryApprover[];
+  allowedRecipients?: TreasuryAllowedRecipient[];
   notes?: string;
 };
 
@@ -152,6 +155,7 @@ function normalizeRoom(room: TreasuryRoom): TreasuryRoom {
     gasReserve: room.gasReserve?.trim() || defaultGasReserve(room),
     wdkKeyAlias: room.wdkKeyAlias?.trim() || defaultKeyAlias(room),
     agentMode: isTreasuryAgentMode(room.agentMode) ? room.agentMode : "execute-after-quorum",
+    allowedRecipients: normalizeAllowedRecipients(room.allowedRecipients ?? []),
     requests: sortRequests(room.requests.map(normalizeRequest)),
   };
 }
@@ -180,6 +184,25 @@ function normalizeApprovers(approvers: TreasuryApprover[]): TreasuryApprover[] {
     role: entry.role.trim() || "approver",
     handle: entry.handle.trim() || entry.name.trim(),
   }));
+}
+
+function shortAddress(value: string): string {
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function normalizeAllowedRecipients(allowedRecipients: TreasuryAllowedRecipient[]): TreasuryAllowedRecipient[] {
+  return allowedRecipients
+    .map((entry) => ({
+      address: entry.address.trim(),
+      label: entry.label.trim(),
+    }))
+    .filter((entry) => /^0x[a-fA-F0-9]{40}$/.test(entry.address))
+    .map((entry) => ({
+      address: entry.address,
+      label: entry.label || shortAddress(entry.address),
+    }))
+    .filter((entry, index, collection) => collection.findIndex((candidate) => normalizeComparable(candidate.address) === normalizeComparable(entry.address)) === index)
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function normalizeStore(store: TreasuryStore): TreasuryStore {
@@ -282,6 +305,7 @@ export async function createTreasuryRoom(input: CreateRoomInput): Promise<Treasu
     agentMode: input.agentMode ?? "execute-after-quorum",
     status: input.status ?? "active",
     approvers: input.approvers,
+    allowedRecipients: input.allowedRecipients ?? [],
     notes: input.notes,
     requests: [],
     createdAt: now,
@@ -304,6 +328,13 @@ export async function createTreasuryRequest(input: CreateRequestInput): Promise<
   const requestedAmount = numeric(input.amount);
   if (requestedAmount > numeric(room.dailyLimit)) {
     throw new Error(`Requested amount ${input.amount} exceeds the treasury daily limit of ${room.dailyLimit}.`);
+  }
+
+  if (
+    room.allowedRecipients.length > 0
+    && !room.allowedRecipients.some((entry) => normalizeComparable(entry.address) === normalizeComparable(input.recipient))
+  ) {
+    throw new Error(`Recipient ${input.recipient} is not allowlisted for this treasury room.`);
   }
 
   const duplicate = room.requests.find(
@@ -465,6 +496,9 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
 
   const room = store.rooms[roomIndex];
   const nextApprovers = Array.isArray(input.approvers) && input.approvers.length > 0 ? normalizeApprovers(input.approvers) : room.approvers;
+  const nextAllowedRecipients = Array.isArray(input.allowedRecipients)
+    ? normalizeAllowedRecipients(input.allowedRecipients)
+    : room.allowedRecipients;
   const nextQuorum = input.quorum ?? room.quorum;
   if (!Number.isFinite(nextQuorum) || nextQuorum < 1 || nextQuorum > nextApprovers.length) {
     throw new Error(`Quorum must be between 1 and ${nextApprovers.length}.`);
@@ -482,6 +516,7 @@ export async function updateTreasuryRoomControl(input: UpdateRoomControlInput): 
     agentMode: input.agentMode ?? room.agentMode,
     quorum: nextQuorum,
     approvers: nextApprovers,
+    allowedRecipients: nextAllowedRecipients,
     notes: input.notes !== undefined ? input.notes.trim() : room.notes,
     updatedAt: now,
   });

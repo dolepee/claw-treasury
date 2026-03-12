@@ -3,7 +3,16 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useEffect, useEffectEvent, useMemo, useState, useTransition } from "react";
-import { TreasuryAgentMode, TreasuryApprover, TreasuryChannel, TreasuryExecutionMode, TreasuryRoom, TreasurySpendRequest, TreasuryWdkRuntime } from "@/lib/types";
+import {
+  TreasuryAgentMode,
+  TreasuryAllowedRecipient,
+  TreasuryApprover,
+  TreasuryChannel,
+  TreasuryExecutionMode,
+  TreasuryRoom,
+  TreasurySpendRequest,
+  TreasuryWdkRuntime,
+} from "@/lib/types";
 
 type Props = {
   rooms: TreasuryRoom[];
@@ -30,6 +39,7 @@ type CreateRoomForm = {
   agentMode: TreasuryAgentMode;
   notes: string;
   approvers: string;
+  allowlist: string;
 };
 
 type DrawerForm = {
@@ -42,6 +52,7 @@ type DrawerForm = {
   wdkKeyAlias: string;
   agentMode: TreasuryAgentMode;
   notes: string;
+  allowlist: string;
 };
 
 type ToastState = {
@@ -80,6 +91,7 @@ const defaultRoomForm: CreateRoomForm = {
   agentMode: "execute-after-quorum",
   notes: "",
   approvers: "",
+  allowlist: "",
 };
 
 const channelOptions: Array<{ value: TreasuryChannel; label: string }> = [
@@ -241,6 +253,25 @@ function parseApprovers(raw: string): TreasuryApprover[] {
     });
 }
 
+function parseAllowedRecipients(raw: string): TreasuryAllowedRecipient[] {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [address, label] = line.split("|").map((part) => part?.trim() ?? "");
+      return {
+        address,
+        label,
+      };
+    })
+    .filter((entry) => /^0x[a-fA-F0-9]{40}$/.test(entry.address));
+}
+
+function formatAllowedRecipients(allowedRecipients: TreasuryAllowedRecipient[]): string {
+  return allowedRecipients.map((entry) => `${entry.address}${entry.label ? ` | ${entry.label}` : ""}`).join("\n");
+}
+
 function defaultApprovalSelection(room: TreasuryRoom): string {
   return room.approvers[0]?.id ?? "";
 }
@@ -378,6 +409,7 @@ function mapRoomToDrawer(room: TreasuryRoom): DrawerForm {
     wdkKeyAlias: room.wdkKeyAlias,
     agentMode: room.agentMode,
     notes: room.notes,
+    allowlist: formatAllowedRecipients(room.allowedRecipients),
   };
 }
 
@@ -739,6 +771,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
       void (async () => {
         try {
           const approvers = parseApprovers(createForm.approvers);
+          const allowedRecipients = parseAllowedRecipients(createForm.allowlist);
           const res = await fetch("/api/treasury/rooms", {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -746,6 +779,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
               ...createForm,
               quorum: Number(createForm.quorum),
               approvers,
+              allowedRecipients,
             }),
           });
 
@@ -949,10 +983,14 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
     startTransition(() => {
       void (async () => {
         try {
+          const allowedRecipients = parseAllowedRecipients(drawerForm.allowlist);
           const res = await fetch("/api/treasury/rooms", {
             method: "PATCH",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify(drawerForm),
+            body: JSON.stringify({
+              ...drawerForm,
+              allowedRecipients,
+            }),
           });
 
           if (!res.ok) {
@@ -1871,7 +1909,7 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
               </label>
             </div>
 
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <div className="mt-4 grid gap-4 xl:grid-cols-3">
               <label className="space-y-2 text-sm text-zinc-300">
                 Approvers
                 <textarea
@@ -1882,6 +1920,17 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                   placeholder={"Treasury Lead | finance | @treasurylead\nOperator | ops | @treasuryops"}
                 />
                 <span className="text-xs text-zinc-500">Use one approver per line in the format: Name | role | @handle</span>
+              </label>
+              <label className="space-y-2 text-sm text-zinc-300">
+                Recipient allowlist
+                <textarea
+                  className="ct-textarea font-mono"
+                  rows={5}
+                  value={createForm.allowlist}
+                  onChange={(event) => setRoomField("allowlist", event.target.value)}
+                  placeholder={"0x1234...abcd | Payroll hot wallet\n0xabcd...7890 | Growth agency"}
+                />
+                <span className="text-xs text-zinc-500">Optional. One recipient per line in the format: 0x... | label</span>
               </label>
               <label className="space-y-2 text-sm text-zinc-300">
                 Notes
@@ -2021,6 +2070,22 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                   <div className="ct-label">Control notes</div>
                   <p className="mt-3 text-sm leading-7 text-zinc-400">{selectedRoom.notes || "No policy notes attached yet."}</p>
                 </div>
+
+                <div className="rounded-[22px] border border-white/10 bg-black/25 p-4">
+                  <div className="ct-label">Recipient allowlist</div>
+                  {selectedRoom.allowedRecipients.length === 0 ? (
+                    <p className="mt-3 text-sm leading-7 text-zinc-400">Open policy. Any recipient can be requested while the other checks pass.</p>
+                  ) : (
+                    <ul className="mt-4 space-y-3">
+                      {selectedRoom.allowedRecipients.map((recipient) => (
+                        <li key={recipient.address} className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-3">
+                          <p className="font-medium text-white">{recipient.label}</p>
+                          <p className="mt-1 font-mono text-xs text-zinc-500">{recipient.address}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             ) : null}
           </motion.section>
@@ -2138,6 +2203,17 @@ export function TreasuryDashboard({ rooms, wdk }: Props) {
                   <label className="space-y-2 text-sm text-zinc-300">
                     Policy notes
                     <textarea className="ct-textarea" rows={6} value={drawerForm.notes} onChange={(event) => setDrawerField("notes", event.target.value)} />
+                  </label>
+                  <label className="space-y-2 text-sm text-zinc-300">
+                    Recipient allowlist
+                    <textarea
+                      className="ct-textarea font-mono"
+                      rows={6}
+                      value={drawerForm.allowlist}
+                      onChange={(event) => setDrawerField("allowlist", event.target.value)}
+                      placeholder={"0x1234...abcd | Payroll hot wallet\n0xabcd...7890 | Growth agency"}
+                    />
+                    <span className="text-xs text-zinc-500">Leave empty to keep the treasury open to any recipient.</span>
                   </label>
                 </div>
               </div>

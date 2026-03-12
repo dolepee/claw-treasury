@@ -106,6 +106,11 @@ export type TreasuryApprover = {
   handle: string;
 };
 
+export type TreasuryAllowedRecipient = {
+  address: string;
+  label: string;
+};
+
 export type TreasuryApproval = {
   approverId: string;
   approverName: string;
@@ -159,6 +164,7 @@ export type TreasuryRoom = {
   agentMode: TreasuryAgentMode;
   status: TreasuryRoomStatus;
   approvers: TreasuryApprover[];
+  allowedRecipients: TreasuryAllowedRecipient[];
   notes: string;
   requests: TreasurySpendRequest[];
   createdAt: string;

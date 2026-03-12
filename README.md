@@ -77,8 +77,12 @@ ClawTreasury now supports a Telegram-first treasury flow:
 - `show treasury`
 - `balance`
 - `history`
+- `allowlist`
 - `set approvers @alice @bob`
 - `set quorum 2`
+- `set daily limit 250`
+- `allow 0x... for payroll`
+- `remove recipient 0x...`
 - `pay 20 USDT to 0x... for design review`
 - `approve <ref>` or reply `approve` to the request message
 - `reject <ref>` or reply `reject reason` to the request message
@@ -119,7 +123,8 @@ curl https://claw-treasury.vercel.app/api/telegram/webhook
 - Telegram topic or DM can create or use a treasury room bound to its chat context
 - Spend requests are created in chat and echoed back with a short ref
 - Approvers are matched from Telegram usernames against configured approver handles
-- Treasury policy can now be updated in chat with `set approvers` and `set quorum`
+- Treasury policy can now be updated in chat with `set approvers`, `set quorum`, `set daily limit`, and recipient allowlist commands
+- Recipient allowlists are enforced on both Telegram-created requests and dashboard-created requests
 - When quorum is met, Claw executes through WDK and posts the tx hash back into the same thread
 - WhatsApp is still modeled in the data layer but not yet wired as a live transport
 

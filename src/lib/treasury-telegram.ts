@@ -39,8 +39,12 @@ type ParsedCommand =
   | { kind: "create-treasury" }
   | { kind: "show-treasury" }
   | { kind: "history" }
+  | { kind: "allowlist" }
   | { kind: "set-approvers"; handles: string[] }
   | { kind: "set-quorum"; quorum: number }
+  | { kind: "set-daily-limit"; dailyLimit: string }
+  | { kind: "allow-recipient"; address: string; label: string }
+  | { kind: "remove-recipient"; address: string }
   | { kind: "pay"; amount: string; recipient: string; memo: string }
   | { kind: "approve" | "reject"; reference: string | null; note: string }
   | { kind: "invalid"; message: string };
@@ -69,8 +73,12 @@ function commandHelp(): string {
     "show treasury",
     "balance",
     "history",
+    "allowlist",
     "set approvers @alice @bob",
     "set quorum 2",
+    "set daily limit 250",
+    "allow 0x... for payroll",
+    "remove recipient 0x...",
     "pay 20 USDT to 0x... for design review",
     "approve <ref> or reply 'approve' to a request",
     "reject <ref> or reply 'reject reason' to a request",
@@ -105,6 +113,10 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     return { kind: "history" };
   }
 
+  if (/^\/?(allowlist|show\s+allowlist)\b/.test(lower)) {
+    return { kind: "allowlist" };
+  }
+
   const approverMatch = text.match(/^\/?(?:set\s+approvers?|approvers?)\b\s+(.+)$/i);
   if (approverMatch) {
     const handles = approverMatch[1]
@@ -128,6 +140,30 @@ function parseTelegramCommand(rawText: string): ParsedCommand | null {
     }
 
     return { kind: "set-quorum", quorum: Math.floor(quorum) };
+  }
+
+  const dailyLimitMatch = text.match(/^\/?(?:set\s+daily\s+limit|daily\s+limit|limit)\b\s+([0-9]+(?:\.[0-9]+)?)$/i);
+  if (dailyLimitMatch) {
+    return { kind: "set-daily-limit", dailyLimit: Number(dailyLimitMatch[1]).toFixed(2) };
+  }
+
+  const allowRecipientMatch = text.match(
+    /^\/?(?:allow|allowlist\s+add|allow\s+recipient)\b\s+(0x[a-fA-F0-9]{40})(?:\s+(?:for|as)\s+(.+))?$/i,
+  );
+  if (allowRecipientMatch) {
+    return {
+      kind: "allow-recipient",
+      address: allowRecipientMatch[1],
+      label: allowRecipientMatch[2]?.trim() || "",
+    };
+  }
+
+  const removeRecipientMatch = text.match(/^\/?(?:remove\s+recipient|unallow|allowlist\s+remove)\b\s+(0x[a-fA-F0-9]{40})$/i);
+  if (removeRecipientMatch) {
+    return {
+      kind: "remove-recipient",
+      address: removeRecipientMatch[1],
+    };
   }
 
   const decisionMatch = text.match(/^\/?(approve|reject)\b(?:\s+(.+))?$/i);
@@ -190,6 +226,7 @@ function summarizeRoom(room: TreasuryRoom, live: { walletAddress: string; balanc
     `Quorum: ${room.quorum}/${room.approvers.length}`,
     `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
     `Approvers: ${approvers}`,
+    summarizeAllowlist(room),
     `Queue: ${pending} pending, ${approved} approved, ${executed} executed`,
   ].join("\n");
 }
@@ -200,7 +237,32 @@ function summarizePolicy(room: TreasuryRoom): string {
     `Quorum: ${room.quorum}/${room.approvers.length}`,
     `Approvers: ${room.approvers.map((entry) => entry.handle).join(", ")}`,
     `Daily limit: ${room.dailyLimit} ${room.assetSymbol}`,
+    summarizeAllowlist(room),
     `Mode: ${room.agentMode}`,
+  ].join("\n");
+}
+
+function summarizeAllowlist(room: TreasuryRoom): string {
+  if (room.allowedRecipients.length === 0) {
+    return "Allowlist: open";
+  }
+
+  const preview = room.allowedRecipients
+    .slice(0, 3)
+    .map((entry) => `${entry.label} (${entry.address.slice(0, 6)}...${entry.address.slice(-4)})`)
+    .join(", ");
+  const suffix = room.allowedRecipients.length > 3 ? ` +${room.allowedRecipients.length - 3} more` : "";
+  return `Allowlist: ${preview}${suffix}`;
+}
+
+function summarizeAllowlistBoard(room: TreasuryRoom): string {
+  if (room.allowedRecipients.length === 0) {
+    return `${room.name}\nAllowlist is open. Any recipient can be requested while other policy checks pass.`;
+  }
+
+  return [
+    `${room.name} allowlist`,
+    ...room.allowedRecipients.map((entry) => `${entry.label} | ${entry.address}`),
   ].join("\n");
 }
 
@@ -348,6 +410,15 @@ async function handleHistory(context: TelegramContext, room: TreasuryRoom | null
   await reply(context, summarizeHistory(room));
 }
 
+async function handleAllowlist(context: TelegramContext, room: TreasuryRoom | null): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  await reply(context, summarizeAllowlistBoard(room));
+}
+
 function requirePolicyActor(room: TreasuryRoom | null, context: TelegramContext): TreasuryApprover | null {
   if (!room) {
     return null;
@@ -429,6 +500,119 @@ async function handleSetQuorum(
     await reply(context, summarizePolicy(updatedRoom));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not update quorum.";
+    await reply(context, `Policy update failed.\n${message}`);
+  }
+}
+
+async function handleSetDailyLimit(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "set-daily-limit" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can change the treasury policy.");
+    return;
+  }
+
+  try {
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      dailyLimit: input.dailyLimit,
+      notes: `${room.notes}\nUpdated daily limit from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+    if (!updatedRoom) {
+      throw new Error("policy_update_failed");
+    }
+
+    await reply(context, summarizePolicy(updatedRoom));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update the daily limit.";
+    await reply(context, `Policy update failed.\n${message}`);
+  }
+}
+
+async function handleAllowRecipient(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "allow-recipient" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can change the treasury policy.");
+    return;
+  }
+
+  const nextAllowedRecipients = [
+    ...room.allowedRecipients.filter((entry) => entry.address.toLowerCase() !== input.address.toLowerCase()),
+    {
+      address: input.address,
+      label: input.label || input.address.slice(0, 6) + "..." + input.address.slice(-4),
+    },
+  ];
+
+  try {
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      allowedRecipients: nextAllowedRecipients,
+      notes: `${room.notes}\nUpdated allowlist from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+    if (!updatedRoom) {
+      throw new Error("policy_update_failed");
+    }
+
+    await reply(context, summarizeAllowlistBoard(updatedRoom));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update the allowlist.";
+    await reply(context, `Policy update failed.\n${message}`);
+  }
+}
+
+async function handleRemoveRecipient(
+  context: TelegramContext,
+  room: TreasuryRoom | null,
+  input: Extract<ParsedCommand, { kind: "remove-recipient" }>,
+): Promise<void> {
+  if (!room) {
+    await reply(context, "No treasury room is bound to this thread yet. Send 'create treasury' first.");
+    return;
+  }
+
+  const actor = requirePolicyActor(room, context);
+  if (!actor) {
+    await reply(context, "Only an existing approver can change the treasury policy.");
+    return;
+  }
+
+  const nextAllowedRecipients = room.allowedRecipients.filter((entry) => entry.address.toLowerCase() !== input.address.toLowerCase());
+  if (nextAllowedRecipients.length === room.allowedRecipients.length) {
+    await reply(context, `Recipient ${input.address} is not on the allowlist.`);
+    return;
+  }
+
+  try {
+    const updatedRoom = await updateTreasuryRoomControl({
+      roomId: room.id,
+      allowedRecipients: nextAllowedRecipients,
+      notes: `${room.notes}\nRemoved allowlist entry from Telegram by ${formatTelegramActor(context.message)}.`.trim(),
+    });
+    if (!updatedRoom) {
+      throw new Error("policy_update_failed");
+    }
+
+    await reply(context, summarizeAllowlistBoard(updatedRoom));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update the allowlist.";
     await reply(context, `Policy update failed.\n${message}`);
   }
 }
@@ -658,6 +842,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
     return { handled: true };
   }
 
+  if (command.kind === "allowlist") {
+    await handleAllowlist(context, room);
+    return { handled: true };
+  }
+
   if (command.kind === "set-approvers") {
     await handleSetApprovers(context, room, command);
     return { handled: true };
@@ -665,6 +854,21 @@ export async function handleTelegramUpdate(update: TelegramUpdate): Promise<{ ha
 
   if (command.kind === "set-quorum") {
     await handleSetQuorum(context, room, command);
+    return { handled: true };
+  }
+
+  if (command.kind === "set-daily-limit") {
+    await handleSetDailyLimit(context, room, command);
+    return { handled: true };
+  }
+
+  if (command.kind === "allow-recipient") {
+    await handleAllowRecipient(context, room, command);
+    return { handled: true };
+  }
+
+  if (command.kind === "remove-recipient") {
+    await handleRemoveRecipient(context, room, command);
     return { handled: true };
   }
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createTreasuryRoom, updateTreasuryRoomControl } from "@/lib/treasury";
-import { TreasuryAgentMode, TreasuryApprover, TreasuryChannel, TreasuryRoomStatus } from "@/lib/types";
+import { TreasuryAgentMode, TreasuryAllowedRecipient, TreasuryApprover, TreasuryChannel, TreasuryRoomStatus } from "@/lib/types";
 
 type Body = {
   roomId?: string;
@@ -22,6 +22,7 @@ type Body = {
   notes?: string;
   status?: TreasuryRoomStatus;
   approvers?: TreasuryApprover[];
+  allowedRecipients?: TreasuryAllowedRecipient[];
 };
 
 function isTreasuryChannel(value: string | undefined): value is TreasuryChannel {
@@ -81,6 +82,14 @@ export async function POST(request: NextRequest) {
         role: entry.role.trim() || "approver",
         handle: entry.handle.trim() || entry.name.trim(),
       })),
+      allowedRecipients: Array.isArray(body.allowedRecipients)
+        ? body.allowedRecipients
+          .map((entry) => ({
+            address: entry.address?.trim() || "",
+            label: entry.label?.trim() || "",
+          }))
+          .filter((entry) => entry.address)
+        : [],
     });
 
     return NextResponse.json({ ok: true, room });
@@ -116,6 +125,7 @@ export async function PATCH(request: NextRequest) {
       agentMode: body.agentMode,
       quorum: body.quorum,
       approvers: body.approvers,
+      allowedRecipients: body.allowedRecipients,
       notes: body.notes,
     });
 
