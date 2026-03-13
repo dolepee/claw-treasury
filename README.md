@@ -14,6 +14,7 @@ Standalone ClawTreasury app for the Tether WDK hackathon.
   - request USDT payouts
   - record quorum approvals or rejections
   - execute approved payouts through WDK on Plasma
+  - switch a room into sponsored Safe 4337 execution on Plasma when the alias is configured with bundler and paymaster endpoints
   - attach manual receipts only as a fallback
   - export a room audit trail as JSON, CSV, or a markdown operator brief
   - rotate, roll back, or rebind treasury wallets directly from the dashboard
@@ -55,6 +56,16 @@ To enable real Plasma execution, set these server env vars:
     - `assetAddress`
     - `assetDecimals`
     - `explorerBaseUrl`
+    - `erc4337`
+      - `bundlerUrl`
+      - `paymasterUrl`
+      - `sponsorshipPolicyId`
+      - `safeVersion`
+      - `safeModulesVersion`
+      - `entryPointAddress`
+      - `safe4337ModuleAddress`
+      - `safeModulesSetupAddress`
+      - `safeWebAuthnSharedSignerAddress`
 
 Example:
 
@@ -67,10 +78,27 @@ Example:
     "assetAddress": "0xYourPlasmaUsdtContract",
     "assetDecimals": 6,
     "transferMaxFeeWei": "500000000000000",
-    "explorerBaseUrl": "https://plasmascan.to/tx/"
+    "explorerBaseUrl": "https://plasmascan.to/tx/",
+    "erc4337": {
+      "bundlerUrl": "https://your-plasma-bundler.example",
+      "paymasterUrl": "https://your-plasma-paymaster.example",
+      "sponsorshipPolicyId": "optional-policy-id",
+      "safeVersion": "1.4.1",
+      "safeModulesVersion": "0.3.0"
+    }
   }
 }
 ```
+
+When `erc4337.bundlerUrl` and `erc4337.paymasterUrl` are present for an alias:
+
+- new Telegram-created treasury rooms for that alias resolve to a Safe 4337 wallet address instead of the owner EOA
+- execution uses a sponsored Safe user operation on Plasma, so the treasury room no longer needs native gas for the payout path
+- balance and gas snapshots are read from the Safe wallet address
+
+Current limitation:
+
+- `rotate wallet sweep` and `set wallet index <n> sweep` are disabled for Safe 4337 rooms; plain rotate and rebind still work
 
 See [.env.example](./.env.example) for the exact env variable names.
 

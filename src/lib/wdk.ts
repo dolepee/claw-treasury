@@ -1,4 +1,17 @@
+import { createHash } from "node:crypto";
 import type { TreasuryRoom, TreasurySpendRequest, TreasuryWdkRuntime } from "@/lib/types";
+
+type WdkErc4337Binding = {
+  bundlerUrl: string;
+  paymasterUrl?: string;
+  sponsorshipPolicyId?: string;
+  safeVersion?: string;
+  safeModulesVersion?: string;
+  entryPointAddress?: string;
+  safe4337ModuleAddress?: string;
+  safeModulesSetupAddress?: string;
+  safeWebAuthnSharedSignerAddress?: string;
+};
 
 type WdkWalletBinding = {
   seedPhrase: string;
@@ -8,6 +21,7 @@ type WdkWalletBinding = {
   assetAddress?: string;
   assetDecimals?: number;
   explorerBaseUrl?: string;
+  erc4337?: WdkErc4337Binding;
 };
 
 type ExecuteWithWdkInput = {
@@ -64,6 +78,12 @@ type WdkRoomSnapshot = {
 
 const DEFAULT_ASSET_DECIMALS = 6;
 const DEFAULT_NATIVE_DECIMALS = 18;
+const ERC20_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+  "function transfer(address to, uint256 value) returns (bool)",
+];
+const SMART_ACCOUNT_RECEIPT_ATTEMPTS = 12;
+const SMART_ACCOUNT_RECEIPT_DELAY_MS = 1000;
 
 function parseBindings(): Record<string, WdkWalletBinding> {
   const raw = process.env.CLAW_TREASURY_WDK_WALLETS_JSON?.trim();
@@ -95,6 +115,44 @@ function parseBindings(): Record<string, WdkWalletBinding> {
       assetAddress: binding.assetAddress?.trim() || undefined,
       assetDecimals: Number.isFinite(binding.assetDecimals) ? Number(binding.assetDecimals) : undefined,
       explorerBaseUrl: binding.explorerBaseUrl?.trim() || undefined,
+      erc4337:
+        binding.erc4337 && typeof binding.erc4337 === "object" && "bundlerUrl" in binding.erc4337 && typeof binding.erc4337.bundlerUrl === "string"
+          ? {
+            bundlerUrl: binding.erc4337.bundlerUrl.trim(),
+            paymasterUrl:
+              typeof binding.erc4337.paymasterUrl === "string" && binding.erc4337.paymasterUrl.trim()
+                ? binding.erc4337.paymasterUrl.trim()
+                : undefined,
+            sponsorshipPolicyId:
+              typeof binding.erc4337.sponsorshipPolicyId === "string" && binding.erc4337.sponsorshipPolicyId.trim()
+                ? binding.erc4337.sponsorshipPolicyId.trim()
+                : undefined,
+            safeVersion:
+              typeof binding.erc4337.safeVersion === "string" && binding.erc4337.safeVersion.trim()
+                ? binding.erc4337.safeVersion.trim()
+                : undefined,
+            safeModulesVersion:
+              typeof binding.erc4337.safeModulesVersion === "string" && binding.erc4337.safeModulesVersion.trim()
+                ? binding.erc4337.safeModulesVersion.trim()
+                : undefined,
+            entryPointAddress:
+              typeof binding.erc4337.entryPointAddress === "string" && binding.erc4337.entryPointAddress.trim()
+                ? binding.erc4337.entryPointAddress.trim()
+                : undefined,
+            safe4337ModuleAddress:
+              typeof binding.erc4337.safe4337ModuleAddress === "string" && binding.erc4337.safe4337ModuleAddress.trim()
+                ? binding.erc4337.safe4337ModuleAddress.trim()
+                : undefined,
+            safeModulesSetupAddress:
+              typeof binding.erc4337.safeModulesSetupAddress === "string" && binding.erc4337.safeModulesSetupAddress.trim()
+                ? binding.erc4337.safeModulesSetupAddress.trim()
+                : undefined,
+            safeWebAuthnSharedSignerAddress:
+              typeof binding.erc4337.safeWebAuthnSharedSignerAddress === "string" && binding.erc4337.safeWebAuthnSharedSignerAddress.trim()
+                ? binding.erc4337.safeWebAuthnSharedSignerAddress.trim()
+                : undefined,
+          }
+          : undefined,
     };
   }
 
@@ -103,6 +161,10 @@ function parseBindings(): Record<string, WdkWalletBinding> {
 
 function getBinding(alias: string): WdkWalletBinding | null {
   return parseBindings()[alias] ?? null;
+}
+
+function hasSmartAccountBinding(binding: WdkWalletBinding): boolean {
+  return Boolean(binding.erc4337?.bundlerUrl?.trim());
 }
 
 function resolveAccountIndex(room: Pick<TreasuryRoom, "wdkAccountIndex"> | null, binding: WdkWalletBinding, accountIndexOverride?: number): number {
@@ -174,6 +236,224 @@ function getResolvedAssetAddress(room: TreasuryRoom, binding: WdkWalletBinding):
   throw new Error("wdk_asset_address_missing");
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadEthers() {
+  return import("ethers");
+}
+
+function resolveSmartSalt(alias: string, accountIndex: number): string {
+  return `0x${createHash("sha256").update(`${alias}:${accountIndex}`).digest("hex")}`;
+}
+
+async function deriveWdkOwner(binding: WdkWalletBinding, accountIndex: number): Promise<{
+  address: string;
+  privateKey: string;
+  derivationPath: string;
+}> {
+  const { HDNodeWallet } = await loadEthers();
+  const derivationPath = `m/44'/60'/0'/0/${accountIndex}`;
+  const owner = HDNodeWallet.fromPhrase(binding.seedPhrase, undefined, derivationPath);
+  return {
+    address: owner.address,
+    privateKey: owner.privateKey,
+    derivationPath,
+  };
+}
+
+async function buildSmartAccountContext(
+  alias: string,
+  binding: WdkWalletBinding,
+  accountIndex: number,
+): Promise<{
+  safeAddress: string;
+  chainId: bigint;
+  ownerAddress: string;
+  ownerPrivateKey: string;
+  paymasterSponsored: boolean;
+}> {
+  if (!binding.erc4337?.bundlerUrl?.trim()) {
+    throw new Error("wdk_erc4337_not_configured");
+  }
+
+  const [{ Safe4337Pack }, { JsonRpcProvider }] = await Promise.all([
+    import("@tetherto/wdk-safe-relay-kit"),
+    loadEthers(),
+  ]);
+  const owner = await deriveWdkOwner(binding, accountIndex);
+  const provider = new JsonRpcProvider(binding.provider);
+  const network = await provider.getNetwork();
+  const chainId = BigInt(network.chainId);
+  const safeAddress = Safe4337Pack.predictSafeAddress({
+    threshold: 1,
+    owners: [owner.address],
+    saltNonce: resolveSmartSalt(alias, accountIndex),
+    chainId,
+    safeVersion: binding.erc4337.safeVersion,
+    safeModulesVersion: binding.erc4337.safeModulesVersion,
+    paymasterOptions: binding.erc4337.paymasterUrl
+      ? {
+        paymasterUrl: binding.erc4337.paymasterUrl,
+        isSponsored: true,
+        sponsorshipPolicyId: binding.erc4337.sponsorshipPolicyId,
+      }
+      : undefined,
+  });
+
+  return {
+    safeAddress,
+    chainId,
+    ownerAddress: owner.address,
+    ownerPrivateKey: owner.privateKey,
+    paymasterSponsored: Boolean(binding.erc4337.paymasterUrl),
+  };
+}
+
+async function getSmartAccountBalances(input: {
+  walletAddress: string;
+  provider: string;
+  assetAddress: string;
+  assetDecimals: number;
+}): Promise<{ balance: string; gasReserve: string }> {
+  const { Contract, JsonRpcProvider } = await loadEthers();
+  const provider = new JsonRpcProvider(input.provider);
+  const tokenContract = new Contract(input.assetAddress, ERC20_ABI, provider);
+  const [tokenBalance, nativeBalance] = await Promise.all([
+    tokenContract.balanceOf(input.walletAddress) as Promise<bigint>,
+    provider.getBalance(input.walletAddress),
+  ]);
+
+  return {
+    balance: formatUnits(tokenBalance, input.assetDecimals, input.assetDecimals),
+    gasReserve: formatUnits(nativeBalance, DEFAULT_NATIVE_DECIMALS, 6),
+  };
+}
+
+async function executeSmartAccountTransfer(input: {
+  alias: string;
+  binding: WdkWalletBinding;
+  room: TreasuryRoom;
+  request: TreasurySpendRequest;
+  assetAddress: string;
+  assetDecimals: number;
+  amount: bigint;
+  explorerBaseUrl: string;
+}): Promise<ExecuteWithWdkResult> {
+  if (!input.binding.erc4337?.bundlerUrl?.trim()) {
+    throw new Error("wdk_erc4337_not_configured");
+  }
+
+  const [{ Interface }, { Safe4337Pack }] = await Promise.all([
+    loadEthers(),
+    import("@tetherto/wdk-safe-relay-kit"),
+  ]);
+
+  const smartAccount = await buildSmartAccountContext(input.alias, input.binding, resolveAccountIndex(input.room, input.binding));
+  if (!isRuntimePlaceholder(input.room.walletAddress) && input.room.walletAddress.toLowerCase() !== smartAccount.safeAddress.toLowerCase()) {
+    throw new Error("wdk_wallet_address_mismatch");
+  }
+
+  const balances = await getSmartAccountBalances({
+    walletAddress: smartAccount.safeAddress,
+    provider: input.binding.provider,
+    assetAddress: input.assetAddress,
+    assetDecimals: input.assetDecimals,
+  });
+  if (toBaseUnits(balances.balance, input.assetDecimals) < input.amount) {
+    throw new Error(
+      `WDK smart account ${smartAccount.safeAddress} has ${balances.balance} ${input.room.assetSymbol} on ${input.room.network}. Fund the treasury Safe before retrying execution.`,
+    );
+  }
+  if (!smartAccount.paymasterSponsored) {
+    throw new Error("wdk_erc4337_paymaster_missing");
+  }
+
+  const safePack = await Safe4337Pack.init({
+    provider: input.binding.provider,
+    signer: smartAccount.ownerPrivateKey,
+    bundlerUrl: input.binding.erc4337.bundlerUrl,
+    safeModulesVersion: input.binding.erc4337.safeModulesVersion,
+    customContracts: {
+      entryPointAddress: input.binding.erc4337.entryPointAddress,
+      safe4337ModuleAddress: input.binding.erc4337.safe4337ModuleAddress,
+      safeModulesSetupAddress: input.binding.erc4337.safeModulesSetupAddress,
+      safeWebAuthnSharedSignerAddress: input.binding.erc4337.safeWebAuthnSharedSignerAddress,
+    },
+    paymasterOptions: {
+      paymasterUrl: input.binding.erc4337.paymasterUrl ?? "",
+      isSponsored: true,
+      sponsorshipPolicyId: input.binding.erc4337.sponsorshipPolicyId,
+    },
+    options: {
+      owners: [smartAccount.ownerAddress],
+      threshold: 1,
+      safeVersion: input.binding.erc4337.safeVersion as never,
+      saltNonce: resolveSmartSalt(input.alias, resolveAccountIndex(input.room, input.binding)),
+    },
+  });
+
+  const erc20Interface = new Interface(ERC20_ABI);
+  const safeOperation = await safePack.createTransaction({
+    transactions: [
+      {
+        to: input.assetAddress,
+        value: "0",
+        data: erc20Interface.encodeFunctionData("transfer", [input.request.recipient, input.amount]),
+      },
+    ],
+    options: {
+      isSponsored: true,
+      sponsorshipPolicyId: input.binding.erc4337.sponsorshipPolicyId,
+    },
+  });
+  const signedOperation = await safePack.signSafeOperation(safeOperation);
+  const userOperation = signedOperation.getUserOperation();
+  const estimatedFee = (
+    (BigInt(userOperation.callGasLimit) + BigInt(userOperation.verificationGasLimit) + BigInt(userOperation.preVerificationGas)) *
+    BigInt(userOperation.maxFeePerGas)
+  ).toString();
+  const userOpHash = await safePack.executeTransaction({ executable: signedOperation });
+
+  let receipt: {
+    transactionHash: string;
+    actualGasCost: string;
+  } | null = null;
+  for (let attempt = 0; attempt < SMART_ACCOUNT_RECEIPT_ATTEMPTS; attempt += 1) {
+    const current = await safePack.getUserOperationReceipt(userOpHash);
+    if (current?.receipt?.transactionHash) {
+      receipt = {
+        transactionHash: current.receipt.transactionHash,
+        actualGasCost: current.actualGasCost,
+      };
+      break;
+    }
+    await delay(SMART_ACCOUNT_RECEIPT_DELAY_MS);
+  }
+
+  if (!receipt?.transactionHash) {
+    throw new Error(`wdk_erc4337_user_operation_pending:${userOpHash}`);
+  }
+
+  const nextBalances = await getSmartAccountBalances({
+    walletAddress: smartAccount.safeAddress,
+    provider: input.binding.provider,
+    assetAddress: input.assetAddress,
+    assetDecimals: input.assetDecimals,
+  });
+
+  return {
+    txHash: receipt.transactionHash,
+    explorerUrl: input.explorerBaseUrl ? `${input.explorerBaseUrl}${receipt.transactionHash}` : receipt.transactionHash,
+    feeWei: receipt.actualGasCost,
+    quoteFeeWei: estimatedFee,
+    walletAddress: smartAccount.safeAddress,
+    balance: nextBalances.balance,
+    gasReserve: nextBalances.gasReserve,
+  };
+}
+
 export function loadTreasuryWdkRuntime(): TreasuryWdkRuntime {
   return {
     operatorKeyConfigured: Boolean(getConfiguredTreasuryOperatorKey()),
@@ -195,12 +475,32 @@ export async function inspectWdkAlias(alias: string, accountIndexOverride?: numb
     throw new Error("wdk_wallet_binding_missing");
   }
 
+  const accountIndex = resolveAccountIndex(null, binding, accountIndexOverride);
+  if (hasSmartAccountBinding(binding)) {
+    const smartAccount = await buildSmartAccountContext(alias, binding, accountIndex);
+    const balances = binding.assetAddress?.trim()
+      ? await getSmartAccountBalances({
+        walletAddress: smartAccount.safeAddress,
+        provider: binding.provider,
+        assetAddress: binding.assetAddress.trim(),
+        assetDecimals: binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS,
+      })
+      : { balance: null, gasReserve: "0" };
+
+    return {
+      walletAddress: smartAccount.safeAddress,
+      assetAddress: binding.assetAddress?.trim() || null,
+      balance: balances.balance,
+      gasReserve: balances.gasReserve,
+    };
+  }
+
   const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
   const wallet = new WalletManagerEvm(binding.seedPhrase, {
     provider: binding.provider,
     transferMaxFee: binding.transferMaxFeeWei ? BigInt(binding.transferMaxFeeWei) : undefined,
   });
-  const account = await wallet.getAccount(resolveAccountIndex(null, binding, accountIndexOverride));
+  const account = await wallet.getAccount(accountIndex);
 
   try {
     const walletAddress = await account.getAddress();
@@ -227,6 +527,30 @@ export async function inspectTreasuryRoomWithWdk(room: TreasuryRoom): Promise<Wd
   const binding = getBinding(room.wdkKeyAlias);
   if (!binding) {
     throw new Error("wdk_wallet_binding_missing");
+  }
+
+  if (hasSmartAccountBinding(binding)) {
+    const accountIndex = resolveAccountIndex(room, binding);
+    const smartAccount = await buildSmartAccountContext(room.wdkKeyAlias, binding, accountIndex);
+    if (!isRuntimePlaceholder(room.walletAddress) && room.walletAddress.toLowerCase() !== smartAccount.safeAddress.toLowerCase()) {
+      throw new Error("wdk_wallet_address_mismatch");
+    }
+
+    const assetAddress = getResolvedAssetAddress(room, binding);
+    const assetDecimals = binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS;
+    const balances = await getSmartAccountBalances({
+      walletAddress: smartAccount.safeAddress,
+      provider: binding.provider,
+      assetAddress,
+      assetDecimals,
+    });
+
+    return {
+      walletAddress: smartAccount.safeAddress,
+      assetAddress,
+      balance: balances.balance,
+      gasReserve: balances.gasReserve,
+    };
   }
 
   const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
@@ -279,6 +603,21 @@ export async function executeTreasuryRequestWithWdk(input: ExecuteWithWdkInput):
   const binding = getBinding(input.room.wdkKeyAlias);
   if (!binding) {
     throw new Error("wdk_wallet_binding_missing");
+  }
+
+  if (hasSmartAccountBinding(binding)) {
+    const assetAddress = getResolvedAssetAddress(input.room, binding);
+    const assetDecimals = binding.assetDecimals ?? DEFAULT_ASSET_DECIMALS;
+    return executeSmartAccountTransfer({
+      alias: input.room.wdkKeyAlias,
+      binding,
+      room: input.room,
+      request: input.request,
+      assetAddress,
+      assetDecimals,
+      amount: toBaseUnits(input.request.amount, assetDecimals),
+      explorerBaseUrl: normalizeExplorerBaseUrl(input.room, binding),
+    });
   }
 
   const { default: WalletManagerEvm } = await import("@tetherto/wdk-wallet-evm");
@@ -349,6 +688,10 @@ export async function rotateTreasuryWalletWithSweep(input: RotateWithSweepInput)
   const binding = getBinding(input.room.wdkKeyAlias);
   if (!binding) {
     throw new Error("wdk_wallet_binding_missing");
+  }
+
+  if (hasSmartAccountBinding(binding)) {
+    throw new Error("wdk_smart_account_sweep_not_supported");
   }
 
   if (input.room.agentMode !== "execute-after-quorum") {
