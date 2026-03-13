@@ -144,7 +144,10 @@ export async function POST(request: NextRequest) {
     }
 
     const targetAccountIndex = Math.floor(Number(body.targetAccountIndex));
-    if (targetAccountIndex === room.wdkAccountIndex) {
+    const targetSnapshot = await inspectWdkAlias(room.wdkKeyAlias, targetAccountIndex);
+    const walletMatchesTarget = room.walletAddress.trim().toLowerCase() === targetSnapshot.walletAddress.trim().toLowerCase();
+
+    if (targetAccountIndex === room.wdkAccountIndex && walletMatchesTarget) {
       return NextResponse.json(
         { ok: false, error: `This treasury is already bound to ${room.wdkKeyAlias} #${room.wdkAccountIndex}.` },
         { status: 400 },
@@ -177,7 +180,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const targetSnapshot = await inspectWdkAlias(room.wdkKeyAlias, targetAccountIndex);
     const updatedRoom = requireUpdatedRoom(await updateTreasuryRoomControl({
       roomId: room.id,
       walletAddress: targetSnapshot.walletAddress,
@@ -185,7 +187,10 @@ export async function POST(request: NextRequest) {
       gasReserve: targetSnapshot.gasReserve,
       wdkAccountIndex: targetAccountIndex,
       walletHistory: [...room.walletHistory, historyEntry],
-      notes: appendNote(room.notes, `Rebound wallet index to #${targetAccountIndex} from the dashboard.`),
+      notes: appendNote(
+        room.notes,
+        `${targetAccountIndex === room.wdkAccountIndex ? "Refreshed" : "Rebound"} wallet index to #${targetAccountIndex} from the dashboard.`,
+      ),
     }));
 
     return NextResponse.json({

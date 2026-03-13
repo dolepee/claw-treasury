@@ -740,13 +740,15 @@ async function handleSetWalletIndex(
     return;
   }
 
-  if (room.wdkAccountIndex === input.accountIndex) {
-    await reply(context, `This treasury is already bound to ${room.wdkKeyAlias} #${room.wdkAccountIndex}.`);
-    return;
-  }
-
   try {
     const targetSnapshot = await inspectWdkAlias(room.wdkKeyAlias, input.accountIndex);
+    const walletMatchesTarget = room.walletAddress.trim().toLowerCase() === targetSnapshot.walletAddress.trim().toLowerCase();
+
+    if (room.wdkAccountIndex === input.accountIndex && walletMatchesTarget) {
+      await reply(context, `This treasury is already bound to ${room.wdkKeyAlias} #${room.wdkAccountIndex}.`);
+      return;
+    }
+
     const historyEntry = {
       walletAddress: room.walletAddress,
       wdkKeyAlias: room.wdkKeyAlias,
@@ -803,7 +805,7 @@ async function handleSetWalletIndex(
       gasReserve: targetSnapshot.gasReserve,
       wdkAccountIndex: input.accountIndex,
       walletHistory: [...room.walletHistory, historyEntry],
-      notes: `${room.notes}\nSet wallet index from Telegram by ${formatContextActor(context)}.`.trim(),
+      notes: `${room.notes}\n${room.wdkAccountIndex === input.accountIndex ? "Refreshed" : "Set"} wallet index from Telegram by ${formatContextActor(context)}.`.trim(),
     });
 
     if (!updatedRoom) {
