@@ -1,6 +1,8 @@
 # ClawTreasury
 
-Standalone ClawTreasury app for the Tether WDK hackathon.
+Standalone ClawTreasury app for the [Tether Hackathon Galactica: WDK Edition 1](https://dorahacks.io/hackathon/hackathon-galactica-wdk-2026-01/detail).
+
+**Live dashboard:** [claw-treasury.vercel.app](https://claw-treasury.vercel.app)
 
 ## What It Is
 - Chat-native treasury rooms for autonomous treasury operations
